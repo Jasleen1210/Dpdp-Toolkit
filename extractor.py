@@ -1,7 +1,24 @@
 import json
 import csv
 import os
+from PyPDF2 import PdfReader
 
+def extract_pdf(file_path):
+    content = ""
+
+    try:
+        reader = PdfReader(file_path)
+
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                content += text + "\n"
+
+        return content
+
+    except Exception as e:
+        return f"ERROR: {str(e)}"
+        
 def get_all_files(folder_path):
     file_paths = []
 
@@ -31,6 +48,9 @@ def extract_content(file_path, file_type):
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 data = json.load(f)
                 return json.dumps(data)
+                
+        elif file_type == "pdf":
+            return extract_pdf(file_path)
 
         else:
             return None
