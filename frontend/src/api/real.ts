@@ -1,11 +1,17 @@
 export async function scanFiles(files: any[]) {
-  const res = await fetch("http://127.0.0.1:8000/scan", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(files),
-  });
+  try {
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/scan`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(files),
+    });
 
-  return res.json();
+    const data = await res.json();
+    console.log("Response:", data);
+    return data;
+  } catch (err) {
+    console.error("Fetch error:", err);
+  }
 }
