@@ -6,11 +6,6 @@ import React, {
   useMemo,
 } from "react";
 import {
-  HardDrive,
-  FolderOpen,
-  ChevronRight,
-  ChevronDown,
-  Check,
   X,
   Loader2,
   FileText,
@@ -21,11 +16,12 @@ import {
   FileArchive,
   Film,
   Music,
-  Eye,
 } from "lucide-react";
 import { scanFiles as scanFilesAPI } from "../../../api/real";
+import LocalDirectorySelector from "./LocalDirectorySelector";
+import LocalScanResults from "./LocalScanResults";
 
-interface FileEntry {
+export interface FileEntry {
   name: string;
   kind: "file" | "directory";
   path: string;
@@ -35,7 +31,7 @@ interface FileEntry {
   handle?: FileSystemFileHandle;
 }
 
-interface DirNode {
+export interface DirNode {
   name: string;
   path: string;
   selected: boolean;
@@ -45,7 +41,7 @@ interface DirNode {
   handle?: FileSystemDirectoryHandle;
 }
 
-interface FileStats {
+export interface FileStats {
   total: number;
   byType: Record<
     string,
@@ -54,14 +50,25 @@ interface FileStats {
   totalSize: number;
 }
 
-interface DirProgress {
+export interface DirProgress {
   name: string;
   processed: number;
   total: number;
   status: "pending" | "scanning" | "done";
 }
 
-const FILE_CATEGORIES: Record<
+export interface FilePreview {
+  name: string;
+  path: string;
+  content?: string;
+  url?: string;
+  mime?: string;
+  kind: "text" | "image" | "pdf" | "unsupported";
+}
+
+export type FileCategories = typeof FILE_CATEGORIES;
+
+export const FILE_CATEGORIES: Record<
   string,
   { label: string; extensions: string[]; icon: React.ReactNode }
 > = {
@@ -160,6 +167,7 @@ const RELEVANT_EXT = new Set([
   "pdf",
   "docx",
   "xlsx",
+  "r",
 ]);
 
 function categorizeFile(name: string): string {
@@ -170,7 +178,30 @@ function categorizeFile(name: string): string {
   return "other";
 }
 
-function formatBytes(bytes: number): string {
+function recalcStats(files: FileEntry[]): FileStats | null {
+  const byType: Record<
+    string,
+    { count: number; size: number; icon: React.ReactNode }
+  > = {};
+  let totalSize = 0;
+  for (const f of files) {
+    const cat = categorizeFile(f.name);
+    if (!byType[cat]) {
+      const catInfo = FILE_CATEGORIES[cat];
+      byType[cat] = {
+        count: 0,
+        size: 0,
+        icon: catInfo?.icon || <File className="w-4 h-4" />,
+      };
+    }
+    byType[cat].count++;
+    byType[cat].size += f.size || 0;
+    totalSize += f.size || 0;
+  }
+  return files.length === 0 ? null : { total: files.length, byType, totalSize };
+}
+
+export function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
@@ -189,17 +220,13 @@ export default function LocalFilesPanel() {
     {},
   );
   const [fileListLimit, setFileListLimit] = useState(100);
-  const [preview, setPreview] = useState<{
-    name: string;
-    path: string;
-    content?: string;
-    url?: string;
-    mime?: string;
-    kind: "text" | "image" | "pdf" | "unsupported";
-  } | null>(null);
+  const [preview, setPreview] = useState<FilePreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
   const [openCategory, setOpenCategory] = useState<string | null>(null);
+  const [showSupportHelp, setShowSupportHelp] = useState(false);
+  const [supportHelpNote, setSupportHelpNote] = useState("");
+  const [dragActive, setDragActive] = useState(false);
   const rootDirsRef = useRef<DirNode[]>([]);
   const dirProgressRef = useRef<Record<string, DirProgress>>({});
   const lastProgressUpdateRef = useRef(0);
@@ -217,7 +244,7 @@ export default function LocalFilesPanel() {
 
   useEffect(() => {
     rootDirsRef.current = rootDirs;
-  }, [rootDirs]);
+  }, [rootDirs, treeFiles]);
 
   useEffect(() => {
     dirProgressRef.current = dirProgress;
@@ -225,6 +252,27 @@ export default function LocalFilesPanel() {
 
   const supportsAPI =
     typeof window !== "undefined" && "showDirectoryPicker" in window;
+
+  const handleOpenFlag = async (url: string) => {
+    setSupportHelpNote("");
+    try {
+      const opened = window.open(url, "_blank", "noopener,noreferrer");
+      if (!opened) throw new Error("blocked");
+      return;
+    } catch {}
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setSupportHelpNote(
+        "Browser blocked direct open. Link copied—paste into the address bar and press Enter.",
+      );
+    } catch {
+      setSupportHelpNote(
+        "Browser blocked direct open. Copy this link and paste into the address bar: " +
+          url,
+      );
+    }
+  };
 
   const loadChildren = useCallback(
     async (handle: FileSystemDirectoryHandle, parentPath: string) => {
@@ -266,31 +314,137 @@ export default function LocalFilesPanel() {
     [],
   );
 
+  const addFileHandles = useCallback((handles: FileSystemFileHandle[]) => {
+    if (!handles || handles.length === 0) return;
+
+    const parentPath = "/Selected Files";
+    const files: FileEntry[] = handles.map((handle) => {
+      const name = handle.name;
+      const ext = name.includes(".")
+        ? name.split(".").pop()?.toLowerCase()
+        : undefined;
+      return {
+        name,
+        kind: "file",
+        path: `${parentPath}/${name}`,
+        size: 0,
+        extension: ext,
+        handle,
+      };
+    });
+
+    setTreeFiles((prev) => {
+      const existing = prev[parentPath] || [];
+      const dedup = new Map<string, FileEntry>();
+      [...existing, ...files].forEach((f) => dedup.set(f.path, f));
+      return { ...prev, [parentPath]: Array.from(dedup.values()) };
+    });
+
+    setRootDirs((prev) => {
+      const exists = prev.some((d) => d.path === parentPath);
+      if (exists) return prev;
+      const newDir: DirNode = {
+        name: "Selected Files",
+        path: parentPath,
+        selected: true,
+        expanded: true,
+        children: [],
+        loading: false,
+      };
+      return [...prev, newDir];
+    });
+  }, []);
+
+  const addFiles = useCallback(async () => {
+    try {
+      const handles: FileSystemFileHandle[] = await (
+        window as any
+      ).showOpenFilePicker({ multiple: true });
+      addFileHandles(handles);
+    } catch {}
+  }, [addFileHandles]);
+
+  const importDirectoryHandle = useCallback(
+    async (dirHandle: FileSystemDirectoryHandle) => {
+      const parentPath = "/" + dirHandle.name;
+      const exists = rootDirsRef.current.some((d) => d.path === parentPath);
+      if (exists) return;
+
+      try {
+        const { dirs, files } = await loadChildren(dirHandle, parentPath);
+        const newDir: DirNode = {
+          name: dirHandle.name,
+          path: parentPath,
+          selected: true,
+          expanded: true,
+          children: dirs,
+          loading: false,
+          handle: dirHandle,
+        };
+
+        setRootDirs((prev) => [...prev, newDir]);
+        setTreeFiles((prev) => ({ ...prev, [parentPath]: files }));
+      } catch {}
+    },
+    [loadChildren],
+  );
+
   const addDirectory = useCallback(async () => {
     try {
       const dirHandle = await (window as any).showDirectoryPicker({
         mode: "read",
       });
-      const parentPath = "/" + dirHandle.name;
-      const exists = rootDirsRef.current.some((d) => d.path === parentPath);
-      if (exists) return;
-
-      const { dirs, files } = await loadChildren(dirHandle, parentPath);
-
-      const newDir: DirNode = {
-        name: dirHandle.name,
-        path: parentPath,
-        selected: true,
-        expanded: true,
-        children: dirs,
-        loading: false,
-        handle: dirHandle,
-      };
-
-      setRootDirs((prev) => [...prev, newDir]);
-      setTreeFiles((prev) => ({ ...prev, [parentPath]: files }));
+      await importDirectoryHandle(dirHandle);
     } catch {}
-  }, [loadChildren]);
+  }, [importDirectoryHandle]);
+
+  const handleDropItems = useCallback(
+    async (items: DataTransferItemList) => {
+      if (!items || items.length === 0) return;
+
+      const fileHandles: FileSystemFileHandle[] = [];
+      const dirHandles: FileSystemDirectoryHandle[] = [];
+
+      for (const item of Array.from(items)) {
+        try {
+          const handle = await (item as any).getAsFileSystemHandle?.();
+          if (!handle) continue;
+          if (handle.kind === "directory")
+            dirHandles.push(handle as FileSystemDirectoryHandle);
+          else if (handle.kind === "file")
+            fileHandles.push(handle as FileSystemFileHandle);
+        } catch {}
+      }
+
+      for (const dirHandle of dirHandles) {
+        await importDirectoryHandle(dirHandle);
+      }
+
+      if (fileHandles.length > 0) addFileHandles(fileHandles);
+    },
+    [addFileHandles, importDirectoryHandle],
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+  }, []);
+
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragActive(false);
+      if (!supportsAPI) return;
+      const items = e.dataTransfer?.items;
+      if (items && items.length > 0) await handleDropItems(items);
+    },
+    [handleDropItems, supportsAPI],
+  );
 
   const toggleExpand = useCallback(
     async (path: string) => {
@@ -306,7 +460,7 @@ export default function LocalFilesPanel() {
           const name = remainder;
           if (inferred[key]) continue;
           inferred[key] = {
-            name, 
+            name,
             path: key,
             selected: true,
             expanded: false,
@@ -401,27 +555,88 @@ export default function LocalFilesPanel() {
     });
   }, []);
 
-  const removeDir = useCallback((path: string) => {
-    setRootDirs((prev) => prev.filter((d) => d.path !== path));
+  const removeDir = useCallback(
+    (path: string) => {
+      const nextRoots = rootDirsRef.current.filter((d) => d.path !== path);
+      const allowedRoots = nextRoots.map((d) => d.path);
+      const isAllowed = (p: string) =>
+        allowedRoots.some((root) => p.startsWith(root));
+
+      const filteredFiles = scannedFiles.filter((f) => isAllowed(f.path));
+
+      setRootDirs(nextRoots);
+      setScannedFiles(filteredFiles);
+
+      setPiiResults((prevPii: any[]) => {
+        if (nextRoots.length === 0) return [];
+        const names = new Set(filteredFiles.map((f) => f.name));
+        return prevPii.filter((r: any) => names.has(r.file));
+      });
+
+      if (nextRoots.length === 0) {
+        setStats(null);
+        setDirProgress({});
+        setScanProgress("");
+      } else {
+        setStats(recalcStats(filteredFiles));
+      }
+
+      setTreeFiles((prev) => {
+        const next = { ...prev };
+        for (const key of Object.keys(next)) {
+          if (key.startsWith(path)) delete next[key];
+        }
+        return next;
+      });
+    },
+    [scannedFiles],
+  );
+
+  const removeFile = useCallback((path: string) => {
+    const dirPath = path.includes("/")
+      ? path.slice(0, path.lastIndexOf("/"))
+      : "";
+
     setTreeFiles((prev) => {
       const next = { ...prev };
-      for (const key of Object.keys(next)) {
-        if (key.startsWith(path)) delete next[key];
+      const list = next[dirPath];
+      if (list) {
+        const filtered = list.filter((f) => f.path !== path);
+        if (filtered.length === 0) delete next[dirPath];
+        else next[dirPath] = filtered;
       }
       return next;
+    });
+
+    setScannedFiles((prev) => {
+      const next = prev.filter((f) => f.path !== path);
+      setStats(recalcStats(next));
+      return next;
+    });
+
+    setPiiResults((prevPii: any[]) => {
+      const fileName = path.split("/").pop();
+      return prevPii.filter((r: any) => r.file !== fileName);
     });
   }, []);
   const [piiResults, setPiiResults] = useState<any[]>([]);
   const scanFiles = useCallback(async () => {
+    const prevFiles = scannedFiles;
+    const prevMap = new Map(prevFiles.map((f) => [f.path, f]));
+    const allowedRoots = rootDirs.map((d) => d.path);
+    const isAllowed = (p: string) =>
+      allowedRoots.some((root) => p.startsWith(root));
+
     setScanning(true);
     setScannedFiles([]);
     setStats(null);
-    
+
     setDirProgress({});
     setFileListLimit(100);
     lastProgressUpdateRef.current = 0;
     bufferedCountRef.current = 0;
     const allFiles: FileEntry[] = [];
+    const seenPaths = new Set<string>();
     try {
       const bumpProgress = (
         key: string,
@@ -451,6 +666,29 @@ export default function LocalFilesPanel() {
             },
           };
         });
+      };
+
+      const tryAddFile = (
+        file: FileEntry,
+        progressKey?: string,
+        label?: string,
+      ) => {
+        if (seenPaths.has(file.path)) return;
+        seenPaths.add(file.path);
+        allFiles.push(file);
+        bufferedCountRef.current += 1;
+        const now = Date.now();
+        if (
+          bufferedCountRef.current >= 500 ||
+          now - lastProgressUpdateRef.current > 200
+        ) {
+          setScanProgress(
+            `Scanning... ${allFiles.length.toLocaleString()} files found`,
+          );
+          bufferedCountRef.current = 0;
+          lastProgressUpdateRef.current = now;
+        }
+        if (progressKey && label) bumpProgress(progressKey, label, 1, 0);
       };
 
       const queue: Array<() => Promise<void>> = [];
@@ -494,28 +732,19 @@ export default function LocalFilesPanel() {
               }
 
               try {
-                allFiles.push({
-                  name: entry.name,
-                  kind: "file",
-                  path: basePath + "/" + entry.name,
-                  size: 0,
-                  lastModified: undefined,
-                  extension: ext,
-                  handle: entry,
-                });
-                bufferedCountRef.current += 1;
-                const now = Date.now();
-                if (
-                  bufferedCountRef.current >= 500 ||
-                  now - lastProgressUpdateRef.current > 200
-                ) {
-                  setScanProgress(
-                    `Scanning... ${allFiles.length.toLocaleString()} files found`,
-                  );
-                  bufferedCountRef.current = 0;
-                  lastProgressUpdateRef.current = now;
-                }
-                bumpProgress(progressKey, label, 1, 0);
+                tryAddFile(
+                  {
+                    name: entry.name,
+                    kind: "file",
+                    path: basePath + "/" + entry.name,
+                    size: 0,
+                    lastModified: undefined,
+                    extension: ext,
+                    handle: entry,
+                  },
+                  progressKey,
+                  label,
+                );
               } catch {}
             } else if (entry.kind === "directory") {
               if (SKIP_DIRS.has(entry.name)) {
@@ -545,6 +774,22 @@ export default function LocalFilesPanel() {
       };
 
       for (const dir of rootDirs) {
+        if (!dir.selected) continue;
+
+        if (!dir.handle) {
+          const files = treeFiles[dir.path] || [];
+          if (files.length > 0) {
+            setScanProgress(
+              `Including ${files.length} selected file${files.length === 1 ? "" : "s"}...`,
+            );
+            for (const f of files) {
+              if (f.extension && !RELEVANT_EXT.has(f.extension)) continue;
+              tryAddFile(f);
+            }
+          }
+          continue;
+        }
+
         if (dir.selected && dir.handle) {
           setScanProgress(`Scanning ${dir.name}...`);
           bumpProgress(dir.path, dir.name, 0, 0, "scanning");
@@ -554,6 +799,17 @@ export default function LocalFilesPanel() {
             for await (const entry of (dir.handle as any).values())
               entries.push(entry);
           } catch {}
+
+          const preloaded = treeFiles[dir.path] || [];
+          if (preloaded.length > 0) {
+            setScanProgress(
+              `Including ${preloaded.length} file${preloaded.length === 1 ? "" : "s"} at root...`,
+            );
+            for (const f of preloaded) {
+              if (f.extension && !RELEVANT_EXT.has(f.extension)) continue;
+              tryAddFile(f, dir.path, dir.name);
+            }
+          }
 
           await Promise.all(
             entries.map(async (entry) => {
@@ -567,28 +823,19 @@ export default function LocalFilesPanel() {
                 }
 
                 try {
-                  allFiles.push({
-                    name: entry.name,
-                    kind: "file",
-                    path: dir.path + "/" + entry.name,
-                    size: 0,
-                    lastModified: undefined,
-                    extension: ext,
-                    handle: entry,
-                  });
-                  bufferedCountRef.current += 1;
-                  const now = Date.now();
-                  if (
-                    bufferedCountRef.current >= 500 ||
-                    now - lastProgressUpdateRef.current > 200
-                  ) {
-                    setScanProgress(
-                      `Scanning... ${allFiles.length.toLocaleString()} files found`,
-                    );
-                    bufferedCountRef.current = 0;
-                    lastProgressUpdateRef.current = now;
-                  }
-                  bumpProgress(dir.path, dir.name, 1, 0);
+                  tryAddFile(
+                    {
+                      name: entry.name,
+                      kind: "file",
+                      path: dir.path + "/" + entry.name,
+                      size: 0,
+                      lastModified: undefined,
+                      extension: ext,
+                      handle: entry,
+                    },
+                    dir.path,
+                    dir.name,
+                  );
                 } catch {}
               } else if (entry.kind === "directory") {
                 if (SKIP_DIRS.has(entry.name)) {
@@ -615,12 +862,52 @@ export default function LocalFilesPanel() {
 
       await runQueue();
 
+      // determine new/kept files and merge with prior scans for active roots
+      const currentMap = new Map(allFiles.map((f) => [f.path, f]));
+
+      const newFiles = allFiles.filter((f) => !prevMap.has(f.path));
+
+      // start with previously scanned files still under active roots
+      const mergedMap = new Map<string, FileEntry>();
+      for (const [path, prev] of prevMap) {
+        if (!isAllowed(path)) continue;
+        mergedMap.set(path, { ...prev });
+      }
+
+      // overlay current scan results (updates/additions)
+      for (const [path, f] of currentMap) {
+        mergedMap.set(path, { ...mergedMap.get(path), ...f });
+      }
+
+      const keptFiles = Array.from(mergedMap.values());
+
+      // enrich metadata only for new files and prepare payload
+      const filesToSend = [];
+      for (const f of newFiles) {
+        if (!f.handle) continue;
+        try {
+          const blob = await f.handle.getFile();
+          f.size = blob.size;
+          if (f.extension === "pdf" || f.extension === "docx") continue; // skip sending PDFs for now
+
+          const text = await blob.text();
+          filesToSend.push({
+            name: f.name,
+            content: text,
+          });
+        } catch {}
+      }
+
+      const mergedFiles = Array.from(
+        new Map([...keptFiles, ...newFiles].map((f) => [f.path, f])).values(),
+      ).filter((f) => isAllowed(f.path));
+
       const byType: Record<
         string,
         { count: number; size: number; icon: React.ReactNode }
       > = {};
       let totalSize = 0;
-      for (const f of allFiles) {
+      for (const f of mergedFiles) {
         const cat = categorizeFile(f.name);
         if (!byType[cat]) {
           const catInfo = FILE_CATEGORIES[cat];
@@ -635,39 +922,36 @@ export default function LocalFilesPanel() {
         totalSize += f.size || 0;
       }
 
-      setScannedFiles(allFiles);
+      setScannedFiles(mergedFiles);
 
-      //sending to backend 
-      const filesToSend = [];
+      const prevPiiMap = new Map<string, any>(
+        piiResults.map((r: any) => [r.file, r]),
+      );
 
-      for (const f of allFiles) {
-        if (!f.handle) continue;
+      // Call API only with new files
+      const data = await scanFilesAPI(filesToSend);
+      console.log("PII RESULTS:", data);
 
-        try {
-          const blob = await f.handle.getFile();
-          const text = await blob.text();
+      const newPiiMap = new Map<string, any>(
+        (data.results || []).map((r: any) => [r.file, r]),
+      );
 
-          filesToSend.push({
-            name: f.name,
-            content: text,
-          });
-        } catch {}
+      // merge previous PII results for kept files, overwrite with new when present
+      const mergedPii: any[] = [];
+      for (const f of mergedFiles) {
+        const res = newPiiMap.get(f.name) || prevPiiMap.get(f.name);
+        if (res) mergedPii.push(res);
       }
+      setPiiResults(mergedPii);
 
-      // Call API
-      const data = await scanFilesAPI(filesToSend); 
-      console.log("PII RESULTS:", data); 
-      setPiiResults(data.results);
-
-
-      setStats({ total: allFiles.length, byType, totalSize });
-      setFileListLimit(Math.min(100, allFiles.length));
+      setStats({ total: mergedFiles.length, byType, totalSize });
+      setFileListLimit(Math.min(100, mergedFiles.length));
     } catch {
     } finally {
       setScanning(false);
       setScanProgress("");
     }
-  }, [rootDirs]);
+  }, [rootDirs, scannedFiles]);
 
   const getFileIcon = (name: string) => {
     const cat = categorizeFile(name);
@@ -742,271 +1026,147 @@ export default function LocalFilesPanel() {
     [closePreview],
   );
 
-  const DirTree = ({
-    nodes,
-    depth = 0,
-  }: {
-    nodes: DirNode[];
-    depth?: number;
-  }) => (
-    <div className={depth > 0 ? "ml-4 border-l border-border/50 pl-1" : ""}>
-      {nodes.map((n) => (
-        <div key={n.path}>
-          <div className="flex items-center gap-1.5 py-1 px-1 hover:bg-muted/20 rounded-sm group">
-            <button
-              onClick={() => toggleExpand(n.path)}
-              className="p-0.5 text-muted-foreground hover:text-foreground shrink-0"
-            >
-              {n.loading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-primary" />
-              ) : n.expanded ? (
-                <ChevronDown className="w-3.5 h-3.5" />
-              ) : (
-                <ChevronRight className="w-3.5 h-3.5" />
-              )}
-            </button>
-            <button
-              onClick={() => toggleSelect(n.path)}
-              className={`w-4 h-4 rounded-sm border flex items-center justify-center shrink-0 transition-colors ${
-                n.selected
-                  ? "bg-primary border-primary text-primary-foreground"
-                  : "border-muted-foreground/50"
-              }`}
-            >
-              {n.selected && <Check className="w-2.5 h-2.5" />}
-            </button>
-            <FolderOpen
-              className={`w-4 h-4 shrink-0 ${n.selected ? "text-primary" : "text-muted-foreground"}`}
-            />
-            <span className="text-[12px] text-foreground truncate font-medium">
-              {n.name}
-            </span>
-            {n.children.length > 0 && (
-              <span className="text-[10px] text-muted-foreground ml-1 shrink-0">
-                ({n.children.length} folder{n.children.length !== 1 ? "s" : ""}
-                {treeFiles[n.path]
-                  ? `, ${treeFiles[n.path].length} file${treeFiles[n.path].length !== 1 ? "s" : ""}`
-                  : ""}
-                )
-              </span>
-            )}
-            {!n.children.length && treeFiles[n.path] && (
-              <span className="text-[10px] text-muted-foreground ml-1 shrink-0">
-                ({treeFiles[n.path].length} file
-                {treeFiles[n.path].length !== 1 ? "s" : ""})
-              </span>
-            )}
-            {scanning &&
-              dirProgress[n.path] &&
-              (() => {
-                const prog = dirProgress[n.path];
-                const pct = Math.min(
-                  100,
-                  Math.round((prog.processed / Math.max(prog.total, 1)) * 100),
-                );
-                return (
-                  <div className="ml-auto flex items-center gap-2">
-                    <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
-                      <div
-                        className={`h-full ${prog.status === "done" ? "bg-primary" : "bg-primary/70"}`}
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-                    <span className="text-[10px] text-muted-foreground w-10 text-right">
-                      {pct}%
-                    </span>
-                  </div>
-                );
-              })()}
-          </div>
-          {n.expanded && (
-            <div className="ml-4 border-l border-border/30 pl-1">
-              {n.children.length > 0 && (
-                <DirTree nodes={n.children} depth={depth + 1} />
-              )}
-              {treeFiles[n.path] && treeFiles[n.path].length > 0 && (
-                <div className="mt-1">
-                  {treeFiles[n.path].slice(0, 50).map((f) => (
-                    <div
-                      key={f.path}
-                      className="flex items-center gap-1.5 py-0.5 px-1 hover:bg-muted/10 rounded-sm"
-                    >
-                      <span className="w-3.5 h-3.5 shrink-0" />
-                      {getFileIcon(f.name)}
-                      <button
-                        onClick={() => openFile(f)}
-                        className="text-[11px] text-foreground/80 truncate text-left flex-1 hover:text-primary"
-                        title="Open preview"
-                      >
-                        {f.name}
-                      </button>
-                      <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
-                        {f.size ? formatBytes(f.size) : ""}
-                      </span>
-                      {f.extension && (
-                        <span className="text-[9px] px-1 py-0.5 bg-muted/50 rounded text-muted-foreground uppercase shrink-0">
-                          {f.extension}
-                        </span>
-                      )}
-                      <button
-                        onClick={() => openFile(f)}
-                        className="text-primary hover:text-primary/80"
-                        title="Open preview"
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                  {treeFiles[n.path].length > 50 && (
-                    <div className="text-[10px] text-muted-foreground px-6 py-1">
-                      ... and {treeFiles[n.path].length - 50} more files
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-
-  const piiStats = useMemo(() => { 
-    const summary: Record<string, number> = {}; 
-    for (const r of piiResults) { 
-      for (const [k, v] of Object.entries(r.pii)) { 
-        if (v) { 
-          summary[k] = (summary[k] || 0) + 1; 
-        } 
-      } 
-    } 
-    return summary; 
-  }, [piiResults]);
-  
   if (!supportsAPI) {
     return (
-      <div className="bg-card border border-border rounded-sm p-6 text-center space-y-2">
-        <p className="text-[13px] text-destructive font-medium">
-          File System Access API not supported
-        </p>
-        <p className="text-[12px] text-muted-foreground">
-          Please use Chrome, Edge, or Opera to access local file scanning.
-        </p>
-      </div>
+      <>
+        <div className="bg-card border border-border rounded-sm p-6 text-center space-y-2">
+          <p className="text-[13px] text-destructive font-medium">
+            File System Access API not supported
+          </p>
+          <p className="text-[12px] text-muted-foreground">
+            Please use Chrome, Edge, or Opera to access local file scanning.
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            When prompted by the browser, allow the picker popup and grant
+            folder access so scanning can proceed.
+          </p>
+          <button
+            onClick={() => setShowSupportHelp(true)}
+            className="mt-3 px-3 py-1.5 text-[12px] font-semibold bg-primary text-primary-foreground rounded-sm hover:bg-primary/90"
+          >
+            View setup steps per browser
+          </button>
+        </div>
+
+        {showSupportHelp && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-card border border-border rounded-sm shadow-lg w-full max-w-xl">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+                <h3 className="text-[13px] font-semibold text-foreground">
+                  Enable local file access
+                </h3>
+                <button
+                  onClick={() => setShowSupportHelp(false)}
+                  className="text-muted-foreground hover:text-foreground"
+                  aria-label="Close support dialog"
+                  title="Close support dialog"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-4 space-y-3 text-[12px] text-foreground">
+                <p className="text-muted-foreground">
+                  Open the relevant flags/settings page in a new tab, enable the
+                  File System Access API if required, then restart the browser.
+                </p>
+                {supportHelpNote && (
+                  <div className="text-[11px] text-foreground bg-muted/50 border border-border rounded-sm px-3 py-2">
+                    {supportHelpNote}
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
+                    <div>
+                      <div className="font-semibold">Brave</div>
+                      <div className="text-muted-foreground text-[11px]">
+                        Enable File System Access API flag, then restart Brave.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        handleOpenFlag("brave://flags/#file-system-access-api")
+                      }
+                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
+                    >
+                      Open flag
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
+                    <div>
+                      <div className="font-semibold">Chrome</div>
+                      <div className="text-muted-foreground text-[11px]">
+                        Supported by default; if disabled, check the flag below.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        handleOpenFlag("chrome://flags/#file-system-access-api")
+                      }
+                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
+                    >
+                      Open flag
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
+                    <div>
+                      <div className="font-semibold">Edge</div>
+                      <div className="text-muted-foreground text-[11px]">
+                        Supported by default; if disabled, use the flag page.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() =>
+                        handleOpenFlag("edge://flags/#file-system-access-api")
+                      }
+                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
+                    >
+                      Open flag
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
+                    <div>
+                      <div className="font-semibold">Firefox</div>
+                      <div className="text-muted-foreground text-[11px]">
+                        Not supported; use a Chromium-based browser for this
+                        feature.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </>
     );
   }
 
   return (
     <div className="space-y-4">
-      <div className="bg-card border border-border rounded-sm p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-[13px] font-semibold text-foreground">
-              Select Directories
-            </h3>
-            <p className="text-[11px] text-muted-foreground">
-              Click folders to expand and explore. Toggle checkboxes to
-              select/deselect.
-            </p>
-          </div>
-          <button
-            onClick={addDirectory}
-            className="px-3 py-1.5 text-[12px] font-medium bg-primary text-primary-foreground rounded-sm hover:bg-primary/90 transition-colors"
-          >
-            + Add Directory
-          </button>
-        </div>
+      <LocalDirectorySelector
+        rootDirs={rootDirs}
+        treeFiles={treeFiles}
+        dirProgress={dirProgress}
+        scanning={scanning}
+        addDirectory={addDirectory}
+        addFiles={addFiles}
+        removeDir={removeDir}
+        removeFile={removeFile}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        dragActive={dragActive}
+        toggleExpand={toggleExpand}
+        toggleSelect={toggleSelect}
+        openFile={openFile}
+        getFileIcon={getFileIcon}
+        formatBytes={formatBytes}
+      />
 
-        {rootDirs.length === 0 ? (
-          <div className="border border-dashed border-border rounded-sm p-8 text-center">
-            <HardDrive className="w-8 h-8 mx-auto text-muted-foreground mb-2" />
-            <p className="text-[12px] text-muted-foreground">
-              No directories added yet.
-            </p>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              Click "Add Directory" to pick a drive or folder to explore.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {rootDirs.map((dir) => (
-              <div
-                key={dir.path}
-                className="border border-border rounded-sm p-2"
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <div className="flex items-center gap-2">
-                    <HardDrive className="w-4 h-4 text-primary" />
-                    <span className="text-[13px] font-semibold text-foreground">
-                      {dir.name}
-                    </span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {dir.children.length} subfolder
-                      {dir.children.length !== 1 ? "s" : ""}
-                      {treeFiles[dir.path]
-                        ? `, ${treeFiles[dir.path].length} files`
-                        : ""}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => removeDir(dir.path)}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <div className="max-h-[400px] overflow-y-auto space-y-2">
-                  {dir.children.length > 0 && (
-                    <DirTree nodes={dir.children} depth={1} />
-                  )}
-                  {treeFiles[dir.path] && treeFiles[dir.path].length > 0 && (
-                    <div className="ml-4 border-l border-border/30 pl-1">
-                      {treeFiles[dir.path].slice(0, 50).map((f) => (
-                        <div
-                          key={f.path}
-                          className="flex items-center gap-1.5 py-0.5 px-1 hover:bg-muted/10 rounded-sm"
-                        >
-                          <span className="w-3.5 h-3.5 shrink-0" />
-                          {getFileIcon(f.name)}
-                          <button
-                            onClick={() => openFile(f)}
-                            className="text-[11px] text-foreground/80 truncate text-left flex-1 hover:text-primary"
-                            title="Open preview"
-                          >
-                            {f.name}
-                          </button>
-                          <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
-                            {f.size ? formatBytes(f.size) : ""}
-                          </span>
-                          {f.extension && (
-                            <span className="text-[9px] px-1 py-0.5 bg-muted/50 rounded text-muted-foreground uppercase shrink-0">
-                              {f.extension}
-                            </span>
-                          )}
-                          <button
-                            onClick={() => openFile(f)}
-                            className="text-primary hover:text-primary/80"
-                            title="Open preview"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                      {treeFiles[dir.path].length > 50 && (
-                        <div className="text-[10px] text-muted-foreground px-6 py-1">
-                          ... and {treeFiles[dir.path].length - 50} more files
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {rootDirs.length > 0 && (!stats || scanning) && (
+      {rootDirs.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center gap-3">
             <button
@@ -1027,378 +1187,23 @@ export default function LocalFilesPanel() {
       )}
 
       {stats && (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-card border border-border rounded-sm p-3">
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                Total Files
-              </div>
-              <div className="text-xl font-bold text-foreground mt-1">
-                {stats.total.toLocaleString()}
-              </div>
-            </div>
-            <div className="bg-card border border-border rounded-sm p-3">
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                Total Size
-              </div>
-              <div className="text-xl font-bold text-foreground mt-1">
-                {formatBytes(stats.totalSize)}
-              </div>
-            </div>
-            <div className="bg-card border border-border rounded-sm p-3">
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                File Types
-              </div>
-              <div className="text-xl font-bold text-foreground mt-1">
-                {Object.keys(stats.byType).length}
-              </div>
-            </div>
-            <div className="bg-card border border-border rounded-sm p-3">
-              <div className="text-[11px] text-muted-foreground uppercase tracking-wider">
-                Directories
-              </div>
-              <div className="text-xl font-bold text-foreground mt-1">
-                {rootDirs.length}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-card border border-border rounded-sm p-4 space-y-3">
-            <h3 className="text-[13px] font-semibold text-foreground">
-              File Distribution
-            </h3>
-            <div className="flex h-6 rounded-sm overflow-hidden border border-border">
-              {Object.entries(stats.byType)
-                .sort(([, a], [, b]) => b.count - a.count)
-                .map(([cat, data], i) => {
-                  const pct = (data.count / stats.total) * 100;
-                  const colors = [
-                    "bg-primary",
-                    "bg-primary/70",
-                    "bg-primary/50",
-                    "bg-primary/30",
-                    "bg-accent",
-                    "bg-muted-foreground/40",
-                    "bg-muted-foreground/20",
-                    "bg-muted",
-                  ];
-                  return (
-                    <div
-                      key={cat}
-                      className={`${colors[i % colors.length]} relative group cursor-default`}
-                      style={{ width: `${Math.max(1, pct)}%` }}
-                      title={`${FILE_CATEGORIES[cat]?.label || "Other"}: ${data.count} files (${pct.toFixed(1)}%)`}
-                    >
-                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-foreground text-background text-[10px] px-2 py-0.5 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10">
-                        {FILE_CATEGORIES[cat]?.label || "Other"}: {data.count}
-                      </div>
-                    </div>
-                  );
-                })}
-            </div>
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(stats.byType)
-                .sort(([, a], [, b]) => b.count - a.count)
-                .map(([cat, data]) => (
-                  <div
-                    key={cat}
-                    className="flex items-center gap-1.5 text-[11px]"
-                  >
-                    <span className="text-primary">{data.icon}</span>
-                    <span className="text-foreground font-medium">
-                      {FILE_CATEGORIES[cat]?.label || "Other"}
-                    </span>
-                    <span className="text-muted-foreground">
-                      ({data.count})
-                    </span>
-                  </div>
-                ))}
-            </div>
-          </div>
-
-          {piiResults.length > 0 && ( 
-            <div className="bg-card border border-border rounded-sm overflow-hidden"> 
-              <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between"> 
-                <h3 className="text-[13px] font-semibold text-foreground"> 
-                  PII Detection Results 
-                </h3> 
-                <span className="text-[11px] text-muted-foreground"> 
-                  {piiResults.length} files scanned 
-                </span> 
-              </div> 
-              <div className="max-h-[300px] overflow-y-auto"> 
-                <table className="w-full text-[12px]"> 
-                  <thead className="sticky top-0 bg-card z-10"> 
-                    <tr className="border-b border-border"> 
-                      <th className="text-left px-4 py-2 text-[11px] uppercase text-muted-foreground"> 
-                        File 
-                      </th> 
-                      <th className="text-left px-4 py-2 text-[11px] uppercase text-muted-foreground"> 
-                        Detected PII 
-                      </th> 
-                      <th className="text-right px-4 py-2 text-[11px] uppercase text-muted-foreground"> 
-                        Risk 
-                      </th> 
-                    </tr> 
-                  </thead> 
-                  <tbody className="divide-y divide-border"> 
-                    {piiResults.map((r, i) => { 
-                      const detected = Object.entries(r.pii) 
-                      .filter(([_, v]) => v) 
-                      .map(([k]) => k); 
-                      
-                      const riskLevel = 
-                      detected.length === 0 
-                      ? "Low" 
-                      : detected.length <= 2 
-                      ? "Medium" 
-                      : "High"; 
-                      return ( 
-                      <tr key={i} className="hover:bg-muted/20"> 
-                      <td className="px-4 py-2 font-mono text-foreground"> 
-                        {r.file} 
-                      </td> 
-                      <td className="px-4 py-2"> 
-                        {detected.length === 0 ? ( 
-                          <span className="text-muted-foreground text-[11px]"> 
-                          No PII found 
-                          </span> ) 
-                          : 
-                        (<div className="flex flex-wrap gap-1"> 
-                        {detected.map((type) => ( 
-                          <span key={type} className="px-2 py-0.5 text-[10px] bg-muted rounded text-foreground" > 
-                          {type} 
-                          </span> 
-                        ))} 
-                        </div> 
-                      )} 
-                      </td> 
-                      
-                      {/* Risk Badge */} 
-                      <td className="px-4 py-2 text-right"> 
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-semibold
-                          ${ 
-                            riskLevel === "Low" 
-                            ? "bg-green-500/10 text-green-600" 
-                            : riskLevel === "Medium" 
-                            ? "bg-yellow-500/10 text-yellow-600" 
-                            : "bg-red-500/10 text-red-600" }`}> 
-                            {riskLevel} 
-                        </span> 
-                      </td> 
-                      </tr> ); 
-                    })} 
-                    </tbody> 
-                  </table> 
-                </div> 
-              </div> 
-            )}
-          <div className="bg-card border border-border rounded-sm overflow-hidden">
-            <div className="px-4 py-3 border-b border-border bg-muted/30">
-              <h3 className="text-[13px] font-semibold text-foreground">
-                File Type Breakdown
-              </h3>
-            </div>
-            <table className="w-full text-[13px]">
-              <thead>
-                <tr className="border-b border-border bg-muted/20">
-                  <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                    Type
-                  </th>
-                  <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                    Count
-                  </th>
-                  <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                    Size
-                  </th>
-                  <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                    Distribution
-                  </th>
-                  <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                    Files
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {Object.entries(stats.byType)
-                  .sort(([, a], [, b]) => b.count - a.count)
-                  .map(([cat, data]) => (
-                    <React.Fragment key={cat}>
-                      <tr className="hover:bg-muted/20">
-                        <td className="px-4 py-2.5 flex items-center gap-2">
-                          <span className="text-primary">{data.icon}</span>
-                          <span className="font-medium text-foreground capitalize">
-                            {FILE_CATEGORIES[cat]?.label || "Other Files"}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-mono text-foreground">
-                          {data.count.toLocaleString()}
-                        </td>
-                        <td className="px-4 py-2.5 text-right font-mono text-muted-foreground">
-                          {formatBytes(data.size)}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-primary rounded-full"
-                                style={{
-                                  width: `${Math.max(2, (data.count / stats.total) * 100)}%`,
-                                }}
-                              />
-                            </div>
-                            <span className="text-[11px] text-muted-foreground w-10 text-right">
-                              {((data.count / stats.total) * 100).toFixed(1)}%
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <button
-                            onClick={() =>
-                              setOpenCategory((prev) =>
-                                prev === cat ? null : cat,
-                              )
-                            }
-                            className="text-[11px] font-semibold text-primary hover:text-primary/80"
-                          >
-                            {openCategory === cat ? "Hide" : "Show"} 10
-                          </button>
-                        </td>
-                      </tr>
-                      {openCategory === cat && (
-                        <tr className="bg-muted/10">
-                          <td colSpan={5} className="px-4 py-2">
-                            <div className="flex flex-wrap gap-2">
-                              {(filesByType[cat] || []).length === 0 && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  No files captured for this type.
-                                </span>
-                              )}
-                              {(filesByType[cat] || []).map((file) => (
-                                <div
-                                  key={file.path}
-                                  className="px-2 py-1 bg-card border border-border rounded-sm text-[11px] flex items-center gap-2"
-                                >
-                                  {getFileIcon(file.name)}
-                                  <span className="font-mono text-foreground truncate max-w-[200px]">
-                                    {file.name}
-                                  </span>
-                                  <span className="text-muted-foreground truncate max-w-[240px]">
-                                    {file.path}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="bg-card border border-border rounded-sm overflow-hidden">
-            <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
-              <h3 className="text-[13px] font-semibold text-foreground">
-                Scanned Files
-              </h3>
-              <span className="text-[11px] text-muted-foreground">
-                {scannedFiles.length.toLocaleString()} total
-              </span>
-            </div>
-            <div className="max-h-[400px] overflow-y-auto">
-              <table className="w-full text-[12px]">
-                <thead className="sticky top-0 bg-card z-10">
-                  <tr className="border-b border-border">
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                      File
-                    </th>
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                      Path
-                    </th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                      Size
-                    </th>
-                    <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                      Type
-                    </th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                      Open
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {scannedFiles.slice(0, fileListLimit).map((f, i) => (
-                    <tr key={i} className="hover:bg-muted/20">
-                      <td className="px-4 py-1.5">
-                        <button
-                          onClick={() => openFile(f)}
-                          className="flex items-center gap-1.5 text-left w-full hover:text-primary"
-                        >
-                          {getFileIcon(f.name)}
-                          <span className="font-mono text-foreground truncate max-w-[200px]">
-                            {f.name}
-                          </span>
-                        </button>
-                      </td>
-                      <td className="px-4 py-1.5 font-mono text-muted-foreground truncate max-w-[300px]">
-                        {f.path}
-                      </td>
-                      <td className="px-4 py-1.5 text-right font-mono text-muted-foreground">
-                        {f.size ? formatBytes(f.size) : "—"}
-                      </td>
-                      <td className="px-4 py-1.5">
-                        <span className="px-1.5 py-0.5 text-[10px] bg-muted rounded-sm text-muted-foreground uppercase">
-                          {f.extension || "—"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-1.5 text-right">
-                        <button
-                          onClick={() => openFile(f)}
-                          className="inline-flex items-center gap-1 text-primary hover:text-primary/80"
-                        >
-                          <Eye className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {scannedFiles.length > 0 && scannedFiles.length > fileListLimit && (
-              <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted/20 text-[11px] text-muted-foreground">
-                <span>
-                  Showing {fileListLimit.toLocaleString()} of{" "}
-                  {scannedFiles.length.toLocaleString()} files
-                </span>
-                <button
-                  onClick={() => setFileListLimit(scannedFiles.length)}
-                  className="text-primary hover:text-primary/80 font-semibold text-[11px]"
-                >
-                  Show all
-                </button>
-              </div>
-            )}
-            {scannedFiles.length > 100 &&
-              fileListLimit === scannedFiles.length && (
-                <div className="flex items-center justify-between px-4 py-2 border-t border-border bg-muted/20 text-[11px] text-muted-foreground">
-                  <span>
-                    Showing all {scannedFiles.length.toLocaleString()} files
-                  </span>
-                  <button
-                    onClick={() =>
-                      setFileListLimit(Math.min(100, scannedFiles.length))
-                    }
-                    className="text-primary hover:text-primary/80 font-semibold text-[11px]"
-                  >
-                    Collapse to first 100
-                  </button>
-                </div>
-              )}
-          </div>
-        </div>
+        <LocalScanResults
+          stats={stats}
+          fileCategories={FILE_CATEGORIES}
+          filesByType={filesByType}
+          getFileIcon={getFileIcon}
+          openCategory={openCategory}
+          setOpenCategory={setOpenCategory}
+          scannedFiles={scannedFiles}
+          fileListLimit={fileListLimit}
+          setFileListLimit={setFileListLimit}
+          openFile={openFile}
+          piiResults={piiResults}
+          rootDirs={rootDirs}
+          formatBytes={formatBytes}
+        />
       )}
+
       {(previewLoading || preview || previewError) && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-card border border-border rounded-sm shadow-lg w-full max-w-3xl max-h-[80vh] flex flex-col">
@@ -1415,6 +1220,8 @@ export default function LocalFilesPanel() {
               <button
                 onClick={closePreview}
                 className="text-muted-foreground hover:text-foreground"
+                aria-label="Close preview"
+                title="Close preview"
               >
                 <X className="w-4 h-4" />
               </button>

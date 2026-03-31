@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -50,7 +50,11 @@
     --success: 142 76% 36%;
     --success-foreground: 0 0% 100%;
 
-    font-family: 'Geist Sans', system-ui, -apple-system, sans-serif;
+    font-family:
+      "Geist Sans",
+      system-ui,
+      -apple-system,
+      sans-serif;
   }
 
   .dark {
@@ -106,33 +110,114 @@
     @apply bg-background text-foreground antialiased;
     font-feature-settings: "ss01", "ss02", "cv01";
   }
-  
+
   /* Sovereign transitions */
-  button, a, [role="button"] {
+  button,
+  a,
+  [role="button"] {
     transition: all 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 }
 
 @layer utilities {
   .font-mono-data {
-    font-family: 'Geist Mono', 'SF Mono', 'Fira Code', monospace;
+    font-family: "Geist Mono", "SF Mono", "Fira Code", monospace;
     font-variant-numeric: tabular-nums;
   }
-  
+
   .text-system {
     @apply text-[11px] uppercase tracking-widest font-mono-data;
   }
-  
+
   .sovereign-shadow {
-    box-shadow: 0 1px 2px 0 hsl(145 5% 20% / 0.05), 0 1px 3px 0 hsl(145 5% 20% / 0.04);
+    box-shadow:
+      0 1px 2px 0 hsl(145 5% 20% / 0.05),
+      0 1px 3px 0 hsl(145 5% 20% / 0.04);
   }
-  
+
   .sovereign-shadow-dark {
-    box-shadow: 0 1px 2px 0 hsl(0 0% 0% / 0.3), 0 1px 3px 0 hsl(0 0% 0% / 0.2);
+    box-shadow:
+      0 1px 2px 0 hsl(0 0% 0% / 0.3),
+      0 1px 3px 0 hsl(0 0% 0% / 0.2);
   }
 
   .fade-right-mask {
     mask-image: linear-gradient(to right, black 85%, transparent 100%);
     -webkit-mask-image: linear-gradient(to right, black 85%, transparent 100%);
+  }
+}
+
+@layer components {
+  progress.progress-bar {
+    width: 100%;
+    height: 0.375rem;
+    appearance: none;
+    border-radius: 9999px;
+    background-color: hsl(var(--muted));
+    accent-color: hsl(var(--primary));
+    overflow: hidden;
+  }
+
+  progress.progress-bar::-webkit-progress-bar {
+    background-color: hsl(var(--muted));
+    border-radius: 9999px;
+  }
+
+  progress.progress-bar::-webkit-progress-value {
+    background-color: hsl(var(--primary));
+    border-radius: 9999px;
+  }
+
+  progress.progress-bar[data-variant="warning"]::-webkit-progress-value {
+    background-color: hsl(var(--warning));
+  }
+
+  progress.progress-bar[data-variant="destructive"]::-webkit-progress-value {
+    background-color: hsl(var(--destructive));
+  }
+
+  progress.progress-bar[data-variant="success"]::-webkit-progress-value {
+    background-color: hsl(var(--success));
+  }
+
+  progress.progress-bar::-moz-progress-bar {
+    background-color: hsl(var(--primary));
+    border-radius: 9999px;
+  }
+
+  progress.progress-bar[data-variant="warning"]::-moz-progress-bar {
+    background-color: hsl(var(--warning));
+  }
+
+  progress.progress-bar[data-variant="destructive"]::-moz-progress-bar {
+    background-color: hsl(var(--destructive));
+  }
+
+  progress.progress-bar[data-variant="success"]::-moz-progress-bar {
+    background-color: hsl(var(--success));
+  }
+
+  /* Thin, subtle scrollbars for all scrollable areas */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground)) hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: hsl(var(--muted));
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground));
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.8);
   }
 }
