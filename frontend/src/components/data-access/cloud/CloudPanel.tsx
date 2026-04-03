@@ -1,59 +1,56 @@
 import React from "react";
+//currently working on azure s3 (install boto3)
+//pip install google-api-python-client
+//pip install azure-storage-blob
 
-const mockCloudSources = [
-  {
-    id: "cl-1",
-    provider: "AWS S3",
-    bucket: "s3://prod-data-lake",
-    objects: 124500,
-    size: "2.4 TB",
-    scanned: true,
-    pii_found: 3402,
-    region: "ap-south-1",
-  },
-  {
-    id: "cl-2",
-    provider: "Azure Blob",
-    bucket: "azure://backups-container",
-    objects: 8900,
-    size: "890 GB",
-    scanned: true,
-    pii_found: 128,
-    region: "centralindia",
-  },
-  {
-    id: "cl-3",
-    provider: "GCP Storage",
-    bucket: "gs://analytics-exports",
-    objects: 34200,
-    size: "1.1 TB",
-    scanned: false,
-    pii_found: 0,
-    region: "asia-south1",
-  },
-  {
-    id: "cl-4",
-    provider: "AWS S3",
-    bucket: "s3://legacy-documents",
-    objects: 56000,
-    size: "4.7 TB",
-    scanned: true,
-    pii_found: 12890,
-    region: "us-east-1",
-  },
-  {
-    id: "cl-5",
-    provider: "MinIO",
-    bucket: "minio://on-prem-storage",
-    objects: 2300,
-    size: "120 GB",
-    scanned: false,
-    pii_found: 0,
-    region: "on-prem",
-  },
-];
+// const mockCloudSources = [
+//   {
+//     id: "cl-1",
+//     provider: "AWS S3",
+//     bucket: "s3://prod-data-lake",
+//     objects: 124500,
+//     size: "2.4 TB",
+//     scanned: true,
+//     pii_found: 3402,
+//     region: "ap-south-1",
+//   },
+// ];
+
 
 export default function CloudPanel() {
+  const [loading, setLoading] = React.useState(false);
+  const [cloudData, setCloudData] = React.useState([]);
+  
+  const scanCloud = async () => {
+  try {
+    setLoading(true);
+
+    const res = await fetch("http://127.0.0.1:8000/scan-cloud", {
+      method: "POST",
+    });
+
+    const data = await res.json();
+    console.log("SCAN RESPONSE:", data);
+
+    const formatted = data.results.map((file: any, index: number) => ({
+      id: index,
+      provider: "AWS S3",
+      bucket: file.file,
+      region: "ap-south-1",
+      objects: 1,
+      size: "—",
+      scanned: true,
+      pii_found: Object.values(file.pii).filter(Boolean).length,
+    }));
+
+    setCloudData(formatted);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="bg-card border border-border rounded-sm overflow-hidden">
@@ -62,6 +59,12 @@ export default function CloudPanel() {
             Cloud Storage Sources
           </h3>
         </div>
+        <button
+          onClick={scanCloud}
+          className="px-4 py-2 text-[12px] bg-primary text-white rounded-sm"
+        >
+          {loading ? "Scanning..." : "Scan Cloud"}
+        </button>
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-border bg-muted/20">
@@ -89,7 +92,7 @@ export default function CloudPanel() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {mockCloudSources.map((c) => (
+            {cloudData.map((c) => (
               <tr key={c.id} className="hover:bg-muted/20">
                 <td className="px-4 py-2.5">
                   <span
@@ -149,7 +152,7 @@ export default function CloudPanel() {
             Total Objects
           </div>
           <div className="text-xl font-bold text-foreground mt-1">
-            {mockCloudSources
+            {cloudData
               .reduce((a, c) => a + c.objects, 0)
               .toLocaleString()}
           </div>
@@ -159,7 +162,7 @@ export default function CloudPanel() {
             PII Detected
           </div>
           <div className="text-xl font-bold text-warning mt-1">
-            {mockCloudSources
+            {cloudData
               .reduce((a, c) => a + c.pii_found, 0)
               .toLocaleString()}
           </div>
@@ -169,7 +172,7 @@ export default function CloudPanel() {
             Providers
           </div>
           <div className="text-xl font-bold text-foreground mt-1">
-            {new Set(mockCloudSources.map((c) => c.provider)).size}
+            {new Set(cloudData.map((c) => c.provider)).size}
           </div>
         </div>
         <div className="bg-card border border-border rounded-sm p-3">
@@ -177,7 +180,7 @@ export default function CloudPanel() {
             Unscanned
           </div>
           <div className="text-xl font-bold text-destructive mt-1">
-            {mockCloudSources.filter((c) => !c.scanned).length}
+            {cloudData.filter((c) => !c.scanned).length}
           </div>
         </div>
       </div>

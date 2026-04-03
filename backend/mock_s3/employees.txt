@@ -1,0 +1,10 @@
+Employee Records:
+
+Name: Rahul Sharma
+Email: rahul.sharma@company.com
+Phone: 9988776655
+PAN: ABCDE1234F
+
+Name: Priya Verma
+Email: priya.verma@company.com
+Phone: 9871234567
