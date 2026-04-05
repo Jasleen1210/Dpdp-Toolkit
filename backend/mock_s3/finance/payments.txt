@@ -1,0 +1,9 @@
+Transaction Logs:
+
+User: Amit
+Credit Card: 4111111111111111
+Amount: 5000
+
+User: Neha
+Credit Card: 5500000000000004
+Amount: 12000

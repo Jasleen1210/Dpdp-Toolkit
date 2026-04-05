@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation, Link } from "react-router-dom";
-import { fetchDSRRequests } from "@/api/mock";
+// import { fetchDSRRequests } from "@/api/mock";
 import type { DSRRequest } from "@/api/types";
 
 const subtabs = [
@@ -71,11 +71,19 @@ function RequestTable({ requests }: { requests: DSRRequest[] }) {
   );
 }
 
+const fetchRequests = async () => {
+  const res = await fetch("http://127.0.0.1:8000/requests");
+  const data = await res.json();
+  return data.requests;
+};
+
 export default function RequestsPage() {
   const location = useLocation();
   const path = location.pathname;
   const [requests, setRequests] = useState<DSRRequest[]>([]);
-  useEffect(() => { fetchDSRRequests().then(setRequests); }, []);
+  useEffect(() => {
+    fetchRequests().then(setRequests);
+  }, []);
 
   const filtered = path === "/requests/delete" ? requests.filter(r => r.type === "delete")
     : path === "/requests/access" ? requests.filter(r => r.type === "access")
@@ -89,7 +97,24 @@ export default function RequestsPage() {
         <p className="text-[13px] text-muted-foreground mt-0.5">Data Subject Request handler — Track lifecycle and SLA</p>
       </div>
       <SubtabNav />
+      {/* <button
+        onClick={async () => {
+          await fetch("http://127.0.0.1:8000/dpdp/request", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              type: "DELETE",
+              identifier: "rahul@gmail.com"
+            }),
+          });
 
+          const updated = await fetchRequests();
+          setRequests(updated);
+        }}
+        className="bg-primary text-white px-4 py-2 rounded"
+      >
+        Test Delete Request
+      </button> */}
       {path !== "/requests/queue" ? (
         <RequestTable requests={filtered} />
       ) : (

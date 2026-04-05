@@ -17,7 +17,7 @@ import {
   Film,
   Music,
 } from "lucide-react";
-import { scanFiles as scanFilesAPI } from "../../../api/real";
+import { scanFiles as scanFilesAPI } from "../../../api/local";
 import { buildScanPayloadEntry, extractTextForScan } from "./fileTextParsers";
 import LocalDirectorySelector from "./LocalDirectorySelector";
 import LocalScanResults from "./LocalScanResults";
