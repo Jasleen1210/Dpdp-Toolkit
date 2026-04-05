@@ -1,1311 +1,748 @@
-import React, {
-  useState,
-  useCallback,
-  useRef,
-  useEffect,
-  useMemo,
-} from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { ChevronDown, Eye, EyeOff, RefreshCw } from "lucide-react";
 import {
-  X,
-  Loader2,
-  FileText,
-  Image,
-  FileSpreadsheet,
-  File,
-  FileCode,
-  FileArchive,
-  Film,
-  Music,
-} from "lucide-react";
-import { scanFiles as scanFilesAPI } from "../../../api/local";
-import { buildScanPayloadEntry, extractTextForScan } from "./fileTextParsers";
-import LocalDirectorySelector from "./LocalDirectorySelector";
-import LocalScanResults from "./LocalScanResults";
+  approveDevice,
+  createTask,
+  getTaskGroupResults,
+  listDevices,
+  listTasks,
+  registerDevice,
+  type Device,
+  type TaskGroupResultResponse,
+  type TaskHistoryItem,
+} from "../../../api/localAgent";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
-export interface FileEntry {
-  name: string;
-  kind: "file" | "directory";
-  path: string;
-  size?: number;
-  lastModified?: number;
-  extension?: string;
-  handle?: FileSystemFileHandle;
+const DEFAULT_BASE_URL =
+  (import.meta.env.VITE_API_URL as string | undefined)?.trim() || "";
+const DEFAULT_ORG_ID =
+  (import.meta.env.VITE_ORG_ID as string | undefined)?.trim() || "";
+const DEFAULT_ADMIN_KEY =
+  (import.meta.env.VITE_ADMIN_API_KEY as string | undefined)?.trim() || "";
+const DEFAULT_AGENT_TOKEN =
+  (import.meta.env.VITE_AGENT_TOKEN as string | undefined)?.trim() || "";
+
+type ActiveTab = "register" | "new-task";
+
+function formatDate(value?: string): string {
+  if (!value) return "-";
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return value;
+  return dt.toLocaleString();
 }
 
-export interface DirNode {
-  name: string;
-  path: string;
-  selected: boolean;
-  expanded: boolean;
-  children: DirNode[];
-  loading: boolean;
-  handle?: FileSystemDirectoryHandle;
-}
-
-export interface FileStats {
-  total: number;
-  byType: Record<
-    string,
-    { count: number; size: number; icon: React.ReactNode }
-  >;
-  totalSize: number;
-}
-
-export interface DirProgress {
-  name: string;
-  processed: number;
-  total: number;
-  status: "pending" | "scanning" | "done";
-}
-
-export interface FilePreview {
-  name: string;
-  path: string;
-  content?: string;
-  url?: string;
-  mime?: string;
-  kind: "text" | "image" | "pdf" | "unsupported";
-}
-
-export type FileCategories = typeof FILE_CATEGORIES;
-
-export const FILE_CATEGORIES: Record<
-  string,
-  { label: string; extensions: string[]; icon: React.ReactNode }
-> = {
-  pdf: {
-    label: "PDFs",
-    extensions: [".pdf"],
-    icon: <FileText className="w-4 h-4" />,
-  },
-  csv: {
-    label: "CSVs / Spreadsheets",
-    extensions: [".csv", ".xlsx", ".xls", ".tsv", ".ods"],
-    icon: <FileSpreadsheet className="w-4 h-4" />,
-  },
-  images: {
-    label: "Images",
-    extensions: [
-      ".jpg",
-      ".jpeg",
-      ".png",
-      ".gif",
-      ".svg",
-      ".webp",
-      ".bmp",
-      ".ico",
-      ".tiff",
-    ],
-    icon: <Image className="w-4 h-4" />,
-  },
-  documents: {
-    label: "Documents",
-    extensions: [".doc", ".docx", ".odt", ".rtf", ".txt", ".md"],
-    icon: <FileText className="w-4 h-4" />,
-  },
-  code: {
-    label: "Code Files",
-    extensions: [
-      ".js",
-      ".ts",
-      ".jsx",
-      ".tsx",
-      ".py",
-      ".java",
-      ".cpp",
-      ".c",
-      ".go",
-      ".rs",
-      ".html",
-      ".css",
-      ".scss",
-      ".json",
-      ".xml",
-      ".yaml",
-      ".yml",
-      ".toml",
-      ".sql",
-      ".sh",
-      ".bat",
-      ".php",
-      ".rb",
-    ],
-    icon: <FileCode className="w-4 h-4" />,
-  },
-  archives: {
-    label: "Archives",
-    extensions: [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2"],
-    icon: <FileArchive className="w-4 h-4" />,
-  },
-  video: {
-    label: "Videos",
-    extensions: [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm"],
-    icon: <Film className="w-4 h-4" />,
-  },
-  audio: {
-    label: "Audio",
-    extensions: [".mp3", ".wav", ".flac", ".aac", ".ogg", ".wma", ".m4a"],
-    icon: <Music className="w-4 h-4" />,
-  },
-};
-
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  ".next",
-  ".cache",
-  "coverage",
-]);
-
-const RELEVANT_EXT = new Set([
-  "txt",
-  "csv",
-  "json",
-  "md",
-  "log",
-  "pdf",
-  "docx",
-  "xlsx",
-  "r",
-]);
-
-function categorizeFile(name: string): string {
-  const ext = "." + name.split(".").pop()?.toLowerCase();
-  for (const [cat, { extensions }] of Object.entries(FILE_CATEGORIES)) {
-    if (extensions.includes(ext)) return cat;
-  }
-  return "other";
-}
-
-function recalcStats(files: FileEntry[]): FileStats | null {
-  const byType: Record<
-    string,
-    { count: number; size: number; icon: React.ReactNode }
-  > = {};
-  let totalSize = 0;
-  for (const f of files) {
-    const cat = categorizeFile(f.name);
-    if (!byType[cat]) {
-      const catInfo = FILE_CATEGORIES[cat];
-      byType[cat] = {
-        count: 0,
-        size: 0,
-        icon: catInfo?.icon || <File className="w-4 h-4" />,
-      };
-    }
-    byType[cat].count++;
-    byType[cat].size += f.size || 0;
-    totalSize += f.size || 0;
-  }
-  return files.length === 0 ? null : { total: files.length, byType, totalSize };
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+function statusClass(status: string): string {
+  const s = status.toLowerCase();
+  if (s === "pending") return "bg-warning/15 text-warning border-warning/30";
+  if (s === "completed") return "bg-primary/15 text-primary border-primary/30";
+  if (s === "expired")
+    return "bg-destructive/15 text-destructive border-destructive/30";
+  return "bg-muted text-muted-foreground border-border";
 }
 
 export default function LocalFilesPanel() {
-  const [rootDirs, setRootDirs] = useState<DirNode[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [scannedFiles, setScannedFiles] = useState<FileEntry[]>([]);
-  const [stats, setStats] = useState<FileStats | null>(null);
-  const [scanProgress, setScanProgress] = useState("");
-  const [treeFiles, setTreeFiles] = useState<Record<string, FileEntry[]>>({});
-  const [dirProgress, setDirProgress] = useState<Record<string, DirProgress>>(
-    {},
+  const [activeTab, setActiveTab] = useState<ActiveTab>("register");
+
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
+  const [orgId, setOrgId] = useState(DEFAULT_ORG_ID);
+  const [adminKey, setAdminKey] = useState(DEFAULT_ADMIN_KEY);
+  const [agentToken, setAgentToken] = useState(DEFAULT_AGENT_TOKEN);
+
+  const [deviceId, setDeviceId] = useState("TEST-LAPTOP-01");
+  const [hostname, setHostname] = useState("TEST-LAPTOP-01");
+  const [agentVersion, setAgentVersion] = useState("0.1.0");
+
+  const [query, setQuery] = useState("rahul@gmail.com");
+  const [pathsInput, setPathsInput] = useState(
+    "d:/Coding/DPDP/Dpdp-Toolkit/backend/data",
   );
-  const [fileListLimit, setFileListLimit] = useState(100);
-  const [preview, setPreview] = useState<FilePreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState("");
-  const [openCategory, setOpenCategory] = useState<string | null>(null);
-  const [showSupportHelp, setShowSupportHelp] = useState(false);
-  const [supportHelpNote, setSupportHelpNote] = useState("");
-  const [dragActive, setDragActive] = useState(false);
-  const rootDirsRef = useRef<DirNode[]>([]);
-  const dirProgressRef = useRef<Record<string, DirProgress>>({});
-  const lastProgressUpdateRef = useRef(0);
-  const bufferedCountRef = useRef(0);
+  const [expiresInHours, setExpiresInHours] = useState(24);
 
-  const filesByType = useMemo(() => {
-    const map: Record<string, FileEntry[]> = {};
-    for (const f of scannedFiles) {
-      const cat = categorizeFile(f.name);
-      if (!map[cat]) map[cat] = [];
-      if (map[cat].length < 10) map[cat].push(f);
+  const [taskGroupId, setTaskGroupId] = useState("");
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [taskResultGroup, setTaskResultGroup] =
+    useState<TaskGroupResultResponse | null>(null);
+  const [taskHistory, setTaskHistory] = useState<TaskHistoryItem[]>([]);
+
+  const [expandedTaskIds, setExpandedTaskIds] = useState<
+    Record<string, boolean>
+  >({});
+
+  const [statusText, setStatusText] = useState("");
+  const [errorText, setErrorText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isListingDevices, setIsListingDevices] = useState(false);
+  const [hasLoadedDefaults, setHasLoadedDefaults] = useState(false);
+  const [showAdminKey, setShowAdminKey] = useState(false);
+  const [showAgentToken, setShowAgentToken] = useState(false);
+
+  const normalizedBaseUrl = useMemo(
+    () => baseUrl.replace(/\/$/, "").replace(":8000", ":8001"),
+    [baseUrl],
+  );
+
+  const apiConfig = useMemo(
+    () => ({
+      baseUrl: normalizedBaseUrl,
+      orgId: orgId.trim(),
+      adminKey: adminKey.trim(),
+      agentToken: agentToken.trim(),
+    }),
+    [normalizedBaseUrl, orgId, adminKey, agentToken],
+  );
+
+  const pendingTasks = useMemo(
+    () => taskHistory.filter((t) => t.status === "pending"),
+    [taskHistory],
+  );
+
+  const historyTasks = useMemo(
+    () => taskHistory.filter((t) => t.status !== "pending"),
+    [taskHistory],
+  );
+
+  const clearMessages = () => {
+    setStatusText("");
+    setErrorText("");
+  };
+
+  const refreshDevices = async (showPlaceholder = true): Promise<Device[]> => {
+    if (showPlaceholder) setIsListingDevices(true);
+    const res = await listDevices(apiConfig);
+    if (showPlaceholder) setIsListingDevices(false);
+
+    if (!res.ok || !res.data) {
+      setErrorText(`List devices failed: ${res.error}`);
+      return [];
     }
-    return map;
-  }, [scannedFiles]);
+
+    const loadedDevices = res.data.devices || [];
+    setDevices(loadedDevices);
+    return loadedDevices;
+  };
 
   useEffect(() => {
-    rootDirsRef.current = rootDirs;
-  }, [rootDirs, treeFiles]);
+    const loadDefaults = async () => {
+      if (!orgId.trim()) {
+        return;
+      }
 
-  useEffect(() => {
-    dirProgressRef.current = dirProgress;
-  }, [dirProgress]);
+      setErrorText("");
+      await refreshDevices(false);
+      setTaskHistory([]);
+      setHasLoadedDefaults(true);
+    };
 
-  const supportsAPI =
-    typeof window !== "undefined" && "showDirectoryPicker" in window;
+    void loadDefaults();
+  }, [apiConfig, orgId, adminKey]);
 
-  const handleOpenFlag = async (url: string) => {
-    setSupportHelpNote("");
-    try {
-      const opened = window.open(url, "_blank", "noopener,noreferrer");
-      if (!opened) throw new Error("blocked");
+  const toggleTaskExpand = (taskId: string) => {
+    setExpandedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
+  };
+
+  const handleRegisterDevice = async () => {
+    clearMessages();
+    setLoading(true);
+
+    const res = await registerDevice(apiConfig, {
+      device_id: deviceId,
+      hostname,
+      agent_version: agentVersion,
+      organisation_id: orgId,
+    });
+
+    if (!res.ok) {
+      setLoading(false);
+      setErrorText(`Register failed: ${res.error}`);
       return;
-    } catch {}
-
-    try {
-      await navigator.clipboard.writeText(url);
-      setSupportHelpNote(
-        "Browser blocked direct open. Link copied—paste into the address bar and press Enter.",
-      );
-    } catch {
-      setSupportHelpNote(
-        "Browser blocked direct open. Copy this link and paste into the address bar: " +
-          url,
-      );
     }
-  };
 
-  const loadChildren = useCallback(
-    async (handle: FileSystemDirectoryHandle, parentPath: string) => {
-      const dirs: DirNode[] = [];
-      const files: FileEntry[] = [];
-      try {
-        for await (const entry of (handle as any).values()) {
-          if (entry.kind === "directory") {
-            if (SKIP_DIRS.has(entry.name)) continue;
-            dirs.push({
-              name: entry.name,
-              path: parentPath + "/" + entry.name,
-              selected: true,
-              expanded: false,
-              children: [],
-              loading: false,
-              handle: entry,
-            });
-          } else {
-            const ext = entry.name.includes(".")
-              ? entry.name.split(".").pop()?.toLowerCase()
-              : undefined;
-            const size = 0; // lazily fetched only when previewing
-            files.push({
-              name: entry.name,
-              kind: "file",
-              path: parentPath + "/" + entry.name,
-              size,
-              extension: ext,
-              handle: entry,
-            });
-          }
-        }
-      } catch {}
-      dirs.sort((a, b) => a.name.localeCompare(b.name));
-      files.sort((a, b) => a.name.localeCompare(b.name));
-      return { dirs, files };
-    },
-    [],
-  );
-
-  const addFileHandles = useCallback((handles: FileSystemFileHandle[]) => {
-    if (!handles || handles.length === 0) return;
-
-    const parentPath = "/Selected Files";
-    const files: FileEntry[] = handles.map((handle) => {
-      const name = handle.name;
-      const ext = name.includes(".")
-        ? name.split(".").pop()?.toLowerCase()
-        : undefined;
-      return {
-        name,
-        kind: "file",
-        path: `${parentPath}/${name}`,
-        size: 0,
-        extension: ext,
-        handle,
-      };
-    });
-
-    setTreeFiles((prev) => {
-      const existing = prev[parentPath] || [];
-      const dedup = new Map<string, FileEntry>();
-      [...existing, ...files].forEach((f) => dedup.set(f.path, f));
-      return { ...prev, [parentPath]: Array.from(dedup.values()) };
-    });
-
-    setRootDirs((prev) => {
-      const exists = prev.some((d) => d.path === parentPath);
-      if (exists) return prev;
-      const newDir: DirNode = {
-        name: "Selected Files",
-        path: parentPath,
-        selected: true,
-        expanded: true,
-        children: [],
-        loading: false,
-      };
-      return [...prev, newDir];
-    });
-  }, []);
-
-  const addFiles = useCallback(async () => {
-    try {
-      const handles: FileSystemFileHandle[] = await (
-        window as any
-      ).showOpenFilePicker({ multiple: true });
-      addFileHandles(handles);
-    } catch {}
-  }, [addFileHandles]);
-
-  const importDirectoryHandle = useCallback(
-    async (dirHandle: FileSystemDirectoryHandle) => {
-      const parentPath = "/" + dirHandle.name;
-      const exists = rootDirsRef.current.some((d) => d.path === parentPath);
-      if (exists) return;
-
-      try {
-        const { dirs, files } = await loadChildren(dirHandle, parentPath);
-        const newDir: DirNode = {
-          name: dirHandle.name,
-          path: parentPath,
-          selected: true,
-          expanded: true,
-          children: dirs,
-          loading: false,
-          handle: dirHandle,
-        };
-
-        setRootDirs((prev) => [...prev, newDir]);
-        setTreeFiles((prev) => ({ ...prev, [parentPath]: files }));
-      } catch {}
-    },
-    [loadChildren],
-  );
-
-  const addDirectory = useCallback(async () => {
-    try {
-      const dirHandle = await (window as any).showDirectoryPicker({
-        mode: "read",
-      });
-      await importDirectoryHandle(dirHandle);
-    } catch {}
-  }, [importDirectoryHandle]);
-
-  const handleDropItems = useCallback(
-    async (items: DataTransferItemList) => {
-      if (!items || items.length === 0) return;
-
-      const fileHandles: FileSystemFileHandle[] = [];
-      const dirHandles: FileSystemDirectoryHandle[] = [];
-
-      for (const item of Array.from(items)) {
-        try {
-          const handle = await (item as any).getAsFileSystemHandle?.();
-          if (!handle) continue;
-          if (handle.kind === "directory")
-            dirHandles.push(handle as FileSystemDirectoryHandle);
-          else if (handle.kind === "file")
-            fileHandles.push(handle as FileSystemFileHandle);
-        } catch {}
-      }
-
-      for (const dirHandle of dirHandles) {
-        await importDirectoryHandle(dirHandle);
-      }
-
-      if (fileHandles.length > 0) addFileHandles(fileHandles);
-    },
-    [addFileHandles, importDirectoryHandle],
-  );
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(true);
-  }, []);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragActive(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragActive(false);
-      if (!supportsAPI) return;
-      const items = e.dataTransfer?.items;
-      if (items && items.length > 0) await handleDropItems(items);
-    },
-    [handleDropItems, supportsAPI],
-  );
-
-  const toggleExpand = useCallback(
-    async (path: string) => {
-      const inferProgressChildren = (parentPath: string): DirNode[] => {
-        const inferred: Record<string, DirNode> = {};
-        const progress = dirProgressRef.current;
-        const prefix = parentPath.endsWith("/") ? parentPath : parentPath + "/";
-
-        for (const key of Object.keys(progress)) {
-          if (!key.startsWith(prefix)) continue;
-          const remainder = key.slice(prefix.length);
-          if (!remainder || remainder.includes("/")) continue;
-          const name = remainder;
-          if (inferred[key]) continue;
-          inferred[key] = {
-            name,
-            path: key,
-            selected: true,
-            expanded: false,
-            children: [],
-            loading: false,
-          };
-        }
-
-        return Object.values(inferred).sort((a, b) =>
-          a.name.localeCompare(b.name),
-        );
-      };
-
-      const mergeChildren = (existing: DirNode[], inferred: DirNode[]) => {
-        const byPath = new Map<string, DirNode>();
-        for (const c of existing) byPath.set(c.path, c);
-        for (const c of inferred)
-          if (!byPath.has(c.path)) byPath.set(c.path, c);
-        return Array.from(byPath.values()).sort((a, b) =>
-          a.name.localeCompare(b.name),
-        );
-      };
-
-      const findNode = (nodes: DirNode[]): DirNode | null => {
-        for (const n of nodes) {
-          if (n.path === path) return n;
-          const found = findNode(n.children);
-          if (found) return found;
-        }
-        return null;
-      };
-
-      const target = findNode(rootDirsRef.current);
-      if (!target) return;
-      const newExpanded = !target.expanded;
-      const needsLoad =
-        newExpanded && target.children.length === 0 && !!target.handle;
-      const inferredChildren = newExpanded ? inferProgressChildren(path) : [];
-
-      const toggleExpanded = (nodes: DirNode[]): DirNode[] =>
-        nodes.map((n) => {
-          if (n.path === path)
-            return {
-              ...n,
-              expanded: newExpanded,
-              loading: needsLoad,
-              children: mergeChildren(n.children, inferredChildren),
-            };
-          return { ...n, children: toggleExpanded(n.children) };
-        });
-
-      setRootDirs((prev) => toggleExpanded(prev));
-
-      if (needsLoad && target.handle) {
-        const { dirs, files } = await loadChildren(target.handle, target.path);
-        setTreeFiles((prev) => ({ ...prev, [target.path]: files }));
-
-        const attachChildren = (nodes: DirNode[]): DirNode[] =>
-          nodes.map((n) => {
-            if (n.path === path)
-              return {
-                ...n,
-                children: mergeChildren(dirs, inferProgressChildren(path)),
-                loading: false,
-                expanded: newExpanded,
-              };
-            return { ...n, children: attachChildren(n.children) };
-          });
-
-        setRootDirs((prev) => attachChildren(prev));
-      }
-    },
-    [loadChildren],
-  );
-
-  const toggleSelect = useCallback((path: string) => {
-    setRootDirs((prev) => {
-      const update = (nodes: DirNode[]): DirNode[] =>
-        nodes.map((n) => {
-          if (n.path === path) {
-            const newSelected = !n.selected;
-            const selectAll = (node: DirNode): DirNode => ({
-              ...node,
-              selected: newSelected,
-              children: node.children.map(selectAll),
-            });
-            return selectAll(n);
-          }
-          return { ...n, children: update(n.children) };
-        });
-      return update(prev);
-    });
-  }, []);
-
-  const removeDir = useCallback(
-    (path: string) => {
-      const nextRoots = rootDirsRef.current.filter((d) => d.path !== path);
-      const allowedRoots = nextRoots.map((d) => d.path);
-      const isAllowed = (p: string) =>
-        allowedRoots.some((root) => p.startsWith(root));
-
-      const filteredFiles = scannedFiles.filter((f) => isAllowed(f.path));
-
-      setRootDirs(nextRoots);
-      setScannedFiles(filteredFiles);
-
-      setPiiResults((prevPii: any[]) => {
-        if (nextRoots.length === 0) return [];
-        const names = new Set(filteredFiles.map((f) => f.name));
-        return prevPii.filter((r: any) => names.has(r.file));
-      });
-
-      if (nextRoots.length === 0) {
-        setStats(null);
-        setDirProgress({});
-        setScanProgress("");
-      } else {
-        setStats(recalcStats(filteredFiles));
-      }
-
-      setTreeFiles((prev) => {
-        const next = { ...prev };
-        for (const key of Object.keys(next)) {
-          if (key.startsWith(path)) delete next[key];
-        }
-        return next;
-      });
-    },
-    [scannedFiles],
-  );
-
-  const removeFile = useCallback((path: string) => {
-    const dirPath = path.includes("/")
-      ? path.slice(0, path.lastIndexOf("/"))
-      : "";
-
-    setTreeFiles((prev) => {
-      const next = { ...prev };
-      const list = next[dirPath];
-      if (list) {
-        const filtered = list.filter((f) => f.path !== path);
-        if (filtered.length === 0) delete next[dirPath];
-        else next[dirPath] = filtered;
-      }
-      return next;
-    });
-
-    setScannedFiles((prev) => {
-      const next = prev.filter((f) => f.path !== path);
-      setStats(recalcStats(next));
-      return next;
-    });
-
-    setPiiResults((prevPii: any[]) => {
-      const fileName = path.split("/").pop();
-      return prevPii.filter((r: any) => r.file !== fileName);
-    });
-  }, []);
-  const [piiResults, setPiiResults] = useState<any[]>([]);
-  const scanFiles = useCallback(async () => {
-    const prevFiles = scannedFiles;
-    const prevMap = new Map(prevFiles.map((f) => [f.path, f]));
-    const allowedRoots = rootDirs.map((d) => d.path);
-    const isAllowed = (p: string) =>
-      allowedRoots.some((root) => p.startsWith(root));
-
-    setScanning(true);
-    setScannedFiles([]);
-    setStats(null);
-
-    setDirProgress({});
-    setFileListLimit(100);
-    lastProgressUpdateRef.current = 0;
-    bufferedCountRef.current = 0;
-    const allFiles: FileEntry[] = [];
-    const seenPaths = new Set<string>();
-    try {
-      const bumpProgress = (
-        key: string,
-        name: string,
-        deltaProcessed = 0,
-        deltaTotal = 0,
-        forceStatus?: DirProgress["status"],
-      ) => {
-        setDirProgress((prev) => {
-          const current = prev[key] || {
-            name,
-            processed: 0,
-            total: 1,
-            status: "pending" as const,
-          };
-          const nextTotal = Math.max(1, current.total + deltaTotal);
-          const nextProcessed = Math.max(0, current.processed + deltaProcessed);
-          const status =
-            forceStatus || (nextProcessed >= nextTotal ? "done" : "scanning");
-          return {
-            ...prev,
-            [key]: {
-              ...current,
-              processed: nextProcessed,
-              total: nextTotal,
-              status,
-            },
-          };
-        });
-      };
-
-      const tryAddFile = (
-        file: FileEntry,
-        progressKey?: string,
-        label?: string,
-      ) => {
-        if (seenPaths.has(file.path)) return;
-        seenPaths.add(file.path);
-        allFiles.push(file);
-        bufferedCountRef.current += 1;
-        const now = Date.now();
-        if (
-          bufferedCountRef.current >= 500 ||
-          now - lastProgressUpdateRef.current > 200
-        ) {
-          setScanProgress(
-            `Scanning... ${allFiles.length.toLocaleString()} files found`,
-          );
-          bufferedCountRef.current = 0;
-          lastProgressUpdateRef.current = now;
-        }
-        if (progressKey && label) bumpProgress(progressKey, label, 1, 0);
-      };
-
-      const queue: Array<() => Promise<void>> = [];
-      const CONCURRENCY = 30;
-
-      const runQueue = async () => {
-        const workers = Array.from({ length: CONCURRENCY }, async () => {
-          while (queue.length > 0) {
-            const job = queue.shift();
-            if (!job) break;
-            await job();
-          }
-        });
-        await Promise.all(workers);
-      };
-
-      const scanDir = async (
-        handle: FileSystemDirectoryHandle,
-        basePath: string,
-        progressKey: string,
-        label: string,
-        depth: number,
-      ) => {
-        if (depth > 8) return;
-        bumpProgress(progressKey, label, 0, 0, "scanning");
-
-        try {
-          const entries: any[] = [];
-          for await (const entry of (handle as any).values())
-            entries.push(entry);
-          bumpProgress(progressKey, label, 0, entries.length);
-
-          const processEntries = entries.map(async (entry) => {
-            if (entry.kind === "file") {
-              const ext = entry.name.includes(".")
-                ? entry.name.split(".").pop()?.toLowerCase()
-                : undefined;
-              if (!ext || !RELEVANT_EXT.has(ext)) {
-                bumpProgress(progressKey, label, 1, 0);
-                return;
-              }
-
-              try {
-                tryAddFile(
-                  {
-                    name: entry.name,
-                    kind: "file",
-                    path: basePath + "/" + entry.name,
-                    size: 0,
-                    lastModified: undefined,
-                    extension: ext,
-                    handle: entry,
-                  },
-                  progressKey,
-                  label,
-                );
-              } catch {}
-            } else if (entry.kind === "directory") {
-              if (SKIP_DIRS.has(entry.name)) {
-                bumpProgress(progressKey, label, 1, 0);
-                return;
-              }
-
-              const childPath = basePath + "/" + entry.name;
-              bumpProgress(progressKey, label, 0, 1);
-              bumpProgress(childPath, entry.name, 0, 1, "pending");
-              queue.push(async () => {
-                await scanDir(
-                  entry,
-                  childPath,
-                  childPath,
-                  entry.name,
-                  depth + 1,
-                );
-                bumpProgress(progressKey, label, 1, 0);
-                bumpProgress(childPath, entry.name, 1, 0, "done");
-              });
-            }
-          });
-
-          await Promise.all(processEntries);
-        } catch {}
-      };
-
-      for (const dir of rootDirs) {
-        if (!dir.selected) continue;
-
-        if (!dir.handle) {
-          const files = treeFiles[dir.path] || [];
-          if (files.length > 0) {
-            setScanProgress(
-              `Including ${files.length} selected file${files.length === 1 ? "" : "s"}...`,
-            );
-            for (const f of files) {
-              if (f.extension && !RELEVANT_EXT.has(f.extension)) continue;
-              tryAddFile(f);
-            }
-          }
-          continue;
-        }
-
-        if (dir.selected && dir.handle) {
-          setScanProgress(`Scanning ${dir.name}...`);
-          bumpProgress(dir.path, dir.name, 0, 0, "scanning");
-
-          const entries: any[] = [];
-          try {
-            for await (const entry of (dir.handle as any).values())
-              entries.push(entry);
-          } catch {}
-
-          const preloaded = treeFiles[dir.path] || [];
-          if (preloaded.length > 0) {
-            setScanProgress(
-              `Including ${preloaded.length} file${preloaded.length === 1 ? "" : "s"} at root...`,
-            );
-            for (const f of preloaded) {
-              if (f.extension && !RELEVANT_EXT.has(f.extension)) continue;
-              tryAddFile(f, dir.path, dir.name);
-            }
-          }
-
-          await Promise.all(
-            entries.map(async (entry) => {
-              if (entry.kind === "file") {
-                const ext = entry.name.includes(".")
-                  ? entry.name.split(".").pop()?.toLowerCase()
-                  : undefined;
-                if (!ext || !RELEVANT_EXT.has(ext)) {
-                  bumpProgress(dir.path, dir.name, 1, 0);
-                  return;
-                }
-
-                try {
-                  tryAddFile(
-                    {
-                      name: entry.name,
-                      kind: "file",
-                      path: dir.path + "/" + entry.name,
-                      size: 0,
-                      lastModified: undefined,
-                      extension: ext,
-                      handle: entry,
-                    },
-                    dir.path,
-                    dir.name,
-                  );
-                } catch {}
-              } else if (entry.kind === "directory") {
-                if (SKIP_DIRS.has(entry.name)) {
-                  bumpProgress(dir.path, dir.name, 1, 0);
-                  return;
-                }
-
-                const childPath = dir.path + "/" + entry.name;
-                bumpProgress(dir.path, dir.name, 0, 1);
-                bumpProgress(childPath, entry.name, 0, 1, "pending");
-                queue.push(async () => {
-                  await scanDir(entry, childPath, childPath, entry.name, 0);
-                  bumpProgress(dir.path, dir.name, 1, 0);
-                  bumpProgress(childPath, entry.name, 1, 0, "done");
-                });
-              }
-            }),
-          );
-
-          if (entries.length > 0)
-            bumpProgress(dir.path, dir.name, 0, entries.length);
-        }
-      }
-
-      await runQueue();
-
-      const prevPiiMap = new Map<string, any>(
-        piiResults.map((r: any) => [r.file, r]),
-      );
-
-      // determine new/kept files and merge with prior scans for active roots
-      const currentMap = new Map(allFiles.map((f) => [f.path, f]));
-
-      const newFiles = allFiles.filter((f) => !prevMap.has(f.path));
-      const filesNeedingScan = allFiles.filter((f) => !prevPiiMap.has(f.name));
-
-      // start with previously scanned files still under active roots
-      const mergedMap = new Map<string, FileEntry>();
-      for (const [path, prev] of prevMap) {
-        if (!isAllowed(path)) continue;
-        mergedMap.set(path, { ...prev });
-      }
-
-      // overlay current scan results (updates/additions)
-      for (const [path, f] of currentMap) {
-        mergedMap.set(path, { ...mergedMap.get(path), ...f });
-      }
-
-      const keptFiles = Array.from(mergedMap.values());
-
-      // enrich metadata only for files that still need PII results
-      const filesToSend = [];
-      for (const f of filesNeedingScan) {
-        if (!f.handle) continue;
-        try {
-          const blob = await f.handle.getFile();
-          f.size = blob.size;
-
-          const payloadEntry = await buildScanPayloadEntry({
-            name: f.name,
-            extension: f.extension,
-            blob,
-          });
-
-          if (payloadEntry) filesToSend.push(payloadEntry);
-        } catch (err) {
-          console.error("Failed to parse file for scan payload:", f.name, err);
-        }
-      }
-
-      const mergedFiles = Array.from(
-        new Map([...keptFiles, ...newFiles].map((f) => [f.path, f])).values(),
-      ).filter((f) => isAllowed(f.path));
-
-      const byType: Record<
-        string,
-        { count: number; size: number; icon: React.ReactNode }
-      > = {};
-      let totalSize = 0;
-      for (const f of mergedFiles) {
-        const cat = categorizeFile(f.name);
-        if (!byType[cat]) {
-          const catInfo = FILE_CATEGORIES[cat];
-          byType[cat] = {
-            count: 0,
-            size: 0,
-            icon: catInfo?.icon || <File className="w-4 h-4" />,
-          };
-        }
-        byType[cat].count++;
-        byType[cat].size += f.size || 0;
-        totalSize += f.size || 0;
-      }
-
-      setScannedFiles(mergedFiles);
-
-      // Call API only with new files
-      console.log("[LocalScan] Prepared payload entries", {
-        count: filesToSend.length,
-        names: filesToSend.map((f) => f.name),
-        sample: filesToSend.slice(0, 2).map((f) => ({
-          name: f.name,
-          chars: f.content.length,
-          preview: f.content.slice(0, 200),
-        })),
-      });
-
-      const data = await scanFilesAPI(filesToSend);
-      console.log("PII RESULTS:", data);
-
-      const newPiiMap = new Map<string, any>(
-        (data.results || []).map((r: any) => [r.file, r]),
-      );
-
-      // merge previous PII results for kept files, overwrite with new when present
-      const mergedPii: any[] = [];
-      for (const f of mergedFiles) {
-        const res = newPiiMap.get(f.name) || prevPiiMap.get(f.name);
-        if (res) mergedPii.push(res);
-      }
-      setPiiResults(mergedPii);
-
-      setStats({ total: mergedFiles.length, byType, totalSize });
-      setFileListLimit(Math.min(100, mergedFiles.length));
-    } catch {
-    } finally {
-      setScanning(false);
-      setScanProgress("");
-    }
-  }, [rootDirs, scannedFiles, treeFiles, piiResults]);
-
-  const getFileIcon = (name: string) => {
-    const cat = categorizeFile(name);
-    const catInfo = FILE_CATEGORIES[cat];
-    if (catInfo) return <span className="text-primary/60">{catInfo.icon}</span>;
-    return <File className="w-3.5 h-3.5 text-muted-foreground" />;
-  };
-
-  const closePreview = useCallback(() => {
-    setPreview((prev) => {
-      if (prev?.url) URL.revokeObjectURL(prev.url);
-      return null;
-    });
-    setPreviewError("");
-    setPreviewLoading(false);
-  }, []);
-
-  const openFile = useCallback(
-    async (file: FileEntry) => {
-      closePreview();
-      setPreviewLoading(true);
-      try {
-        if (!file.handle)
-          throw new Error("File handle not available for preview");
-
-        const blob = await file.handle.getFile();
-        const mime = blob.type;
-        const isImage = mime.startsWith("image/");
-        const isPdf =
-          mime === "application/pdf" ||
-          file.name.toLowerCase().endsWith(".pdf");
-        const isDocx =
-          mime ===
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-          file.name.toLowerCase().endsWith(".docx");
-
-        if (isImage) {
-          const url = URL.createObjectURL(blob);
-          setPreview({
-            name: file.name,
-            path: file.path,
-            url,
-            mime,
-            kind: "image",
-          });
-        } else if (isPdf) {
-          const url = URL.createObjectURL(blob);
-          setPreview({
-            name: file.name,
-            path: file.path,
-            url,
-            mime,
-            kind: "pdf",
-          });
-        } else if (isDocx) {
-          const content = await extractTextForScan({
-            name: file.name,
-            extension: file.extension,
-            blob,
-          });
-          setPreview({
-            name: file.name,
-            path: file.path,
-            content: content || "[No extractable text found in document]",
-            mime,
-            kind: "text",
-          });
-        } else {
-          const LIMIT = 300000; // ~300 KB for quick text previews
-          const truncated = blob.size > LIMIT;
-          const content = await blob.slice(0, LIMIT).text();
-          const suffix = truncated ? "\n\n...[truncated preview]" : "";
-          setPreview({
-            name: file.name,
-            path: file.path,
-            content: content + suffix,
-            mime,
-            kind: "text",
-          });
-        }
-        setPreviewError("");
-      } catch (err: any) {
-        setPreviewError(err?.message || "Unable to open file");
-        setPreview({ name: file.name, path: file.path, kind: "unsupported" });
-      } finally {
-        setPreviewLoading(false);
-      }
-    },
-    [closePreview],
-  );
-
-  if (!supportsAPI) {
-    return (
-      <>
-        <div className="bg-card border border-border rounded-sm p-6 text-center space-y-2">
-          <p className="text-[13px] text-destructive font-medium">
-            File System Access API not supported
-          </p>
-          <p className="text-[12px] text-muted-foreground">
-            Please use Chrome, Edge, or Opera to access local file scanning.
-          </p>
-          <p className="text-[11px] text-muted-foreground">
-            When prompted by the browser, allow the picker popup and grant
-            folder access so scanning can proceed.
-          </p>
-          <button
-            onClick={() => setShowSupportHelp(true)}
-            className="mt-3 px-3 py-1.5 text-[12px] font-semibold bg-primary text-primary-foreground rounded-sm hover:bg-primary/90"
-          >
-            View setup steps per browser
-          </button>
-        </div>
-
-        {showSupportHelp && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-card border border-border rounded-sm shadow-lg w-full max-w-xl">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <h3 className="text-[13px] font-semibold text-foreground">
-                  Enable local file access
-                </h3>
-                <button
-                  onClick={() => setShowSupportHelp(false)}
-                  className="text-muted-foreground hover:text-foreground"
-                  aria-label="Close support dialog"
-                  title="Close support dialog"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="p-4 space-y-3 text-[12px] text-foreground">
-                <p className="text-muted-foreground">
-                  Open the relevant flags/settings page in a new tab, enable the
-                  File System Access API if required, then restart the browser.
-                </p>
-                {supportHelpNote && (
-                  <div className="text-[11px] text-foreground bg-muted/50 border border-border rounded-sm px-3 py-2">
-                    {supportHelpNote}
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
-                    <div>
-                      <div className="font-semibold">Brave</div>
-                      <div className="text-muted-foreground text-[11px]">
-                        Enable File System Access API flag, then restart Brave.
-                      </div>
-                    </div>
-                    <button
-                      onClick={() =>
-                        handleOpenFlag("brave://flags/#file-system-access-api")
-                      }
-                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
-                    >
-                      Open flag
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
-                    <div>
-                      <div className="font-semibold">Chrome</div>
-                      <div className="text-muted-foreground text-[11px]">
-                        Supported by default; if disabled, check the flag below.
-                      </div>
-                    </div>
-                    <button
-                      onClick={() =>
-                        handleOpenFlag("chrome://flags/#file-system-access-api")
-                      }
-                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
-                    >
-                      Open flag
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
-                    <div>
-                      <div className="font-semibold">Edge</div>
-                      <div className="text-muted-foreground text-[11px]">
-                        Supported by default; if disabled, use the flag page.
-                      </div>
-                    </div>
-                    <button
-                      onClick={() =>
-                        handleOpenFlag("edge://flags/#file-system-access-api")
-                      }
-                      className="text-primary hover:text-primary/80 text-[11px] font-semibold"
-                    >
-                      Open flag
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-2 border border-border rounded-sm px-3 py-2">
-                    <div>
-                      <div className="font-semibold">Firefox</div>
-                      <div className="text-muted-foreground text-[11px]">
-                        Not supported; use a Chromium-based browser for this
-                        feature.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </>
+    await refreshDevices(false);
+    setLoading(false);
+    setStatusText(
+      "Device registered. If not pre-approved, approve it from admin action.",
     );
-  }
+  };
+
+  const handleApproveDevice = async () => {
+    clearMessages();
+    setLoading(true);
+
+    const res = await approveDevice(apiConfig, {
+      device_id: deviceId,
+      approved: true,
+    });
+
+    if (!res.ok) {
+      setLoading(false);
+      setErrorText(`Approve failed: ${res.error}`);
+      return;
+    }
+
+    await refreshDevices(false);
+    setLoading(false);
+    setStatusText("Device approved for distributed scans.");
+  };
+
+  const handleListDevices = async () => {
+    clearMessages();
+    const loadedDevices = await refreshDevices(true);
+    setStatusText(`Fetched ${loadedDevices.length} registered devices.`);
+  };
+
+  const handleCreateTask = async () => {
+    clearMessages();
+    setLoading(true);
+
+    const paths = pathsInput
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const res = await createTask(apiConfig, {
+      query,
+      paths,
+      device_ids: [deviceId],
+      expires_in_hours: expiresInHours,
+    });
+
+    if (!res.ok || !res.data) {
+      setLoading(false);
+      setErrorText(`Create task failed: ${res.error}`);
+      return;
+    }
+
+    setTaskGroupId(res.data.task_group_id);
+
+    setLoading(false);
+    setStatusText(
+      `Task group created: ${res.data.task_group_id} (${res.data.tasks_created} tasks)`,
+    );
+  };
+
+  const handleFetchTaskResults = async () => {
+    clearMessages();
+
+    if (!taskGroupId.trim()) {
+      setErrorText("Provide a task group id to fetch results.");
+      return;
+    }
+
+    setLoading(true);
+
+    const res = await getTaskGroupResults(apiConfig, taskGroupId);
+
+    setLoading(false);
+
+    if (!res.ok || !res.data) {
+      setErrorText(`Fetch results failed: ${res.error}`);
+      return;
+    }
+
+    setTaskResultGroup(res.data);
+    setStatusText(
+      `Loaded results for ${res.data.task_group_id}. Tasks: ${res.data.tasks.length}, results: ${res.data.results.length}`,
+    );
+  };
 
   return (
     <div className="space-y-4">
-      <LocalDirectorySelector
-        rootDirs={rootDirs}
-        treeFiles={treeFiles}
-        dirProgress={dirProgress}
-        scanning={scanning}
-        addDirectory={addDirectory}
-        addFiles={addFiles}
-        removeDir={removeDir}
-        removeFile={removeFile}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        dragActive={dragActive}
-        toggleExpand={toggleExpand}
-        toggleSelect={toggleSelect}
-        openFile={openFile}
-        getFileIcon={getFileIcon}
-        formatBytes={formatBytes}
-      />
+      <div className="bg-card border border-border rounded-sm p-4 space-y-3">
+        <h2 className="text-[14px] font-semibold text-foreground">
+          Local Agent Orchestrator
+        </h2>
+        <p className="text-[12px] text-muted-foreground">
+          Register devices, create new tasks, and monitor pending/history in one
+          place.
+        </p>
 
-      {rootDirs.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={scanFiles}
-              disabled={scanning}
-              className="px-4 py-2 text-[12px] font-semibold bg-primary text-primary-foreground rounded-sm hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2"
-            >
-              {scanning && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              {scanning ? "Scanning..." : "Deep Scan Selected Directories"}
-            </button>
-            {scanProgress && (
-              <span className="text-[11px] text-muted-foreground animate-pulse">
-                {scanProgress}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="text-[12px] text-foreground/90">
+            Backend URL
+            <Input
+              className="mt-1"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+            />
+          </label>
 
-      {stats && (
-        <LocalScanResults
-          stats={stats}
-          fileCategories={FILE_CATEGORIES}
-          filesByType={filesByType}
-          getFileIcon={getFileIcon}
-          openCategory={openCategory}
-          setOpenCategory={setOpenCategory}
-          scannedFiles={scannedFiles}
-          fileListLimit={fileListLimit}
-          setFileListLimit={setFileListLimit}
-          openFile={openFile}
-          piiResults={piiResults}
-          rootDirs={rootDirs}
-          formatBytes={formatBytes}
-        />
-      )}
+          <label className="text-[12px] text-foreground/90">
+            Organisation ID
+            <Input
+              className="mt-1"
+              value={orgId}
+              onChange={(e) => setOrgId(e.target.value)}
+            />
+          </label>
 
-      {(previewLoading || preview || previewError) && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-card border border-border rounded-sm shadow-lg w-full max-w-3xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <div>
-                <div className="text-[13px] font-semibold text-foreground">
-                  {preview?.name || "Preview"}
-                </div>
-                <div className="text-[11px] text-muted-foreground truncate max-w-[500px]">
-                  {preview?.path ||
-                    (previewError ? "Error opening file" : "Loading file...")}
-                </div>
-              </div>
+          <label className="text-[12px] text-foreground/90">
+            Admin Key
+            <div className="relative mt-1">
+              <Input
+                className="pr-10"
+                type={showAdminKey ? "text" : "password"}
+                value={adminKey}
+                onChange={(e) => setAdminKey(e.target.value)}
+              />
               <button
-                onClick={closePreview}
-                className="text-muted-foreground hover:text-foreground"
-                aria-label="Close preview"
-                title="Close preview"
+                type="button"
+                aria-label={showAdminKey ? "Hide admin key" : "Show admin key"}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => setShowAdminKey((v) => !v)}
               >
-                <X className="w-4 h-4" />
+                {showAdminKey ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
               </button>
             </div>
-            <div className="p-4 overflow-auto text-[12px] bg-background/60 flex-1">
-              {previewLoading && (
-                <div className="flex items-center gap-2 text-muted-foreground">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Loading...
-                </div>
-              )}
-              {!previewLoading && previewError && (
-                <div className="text-destructive text-[12px]">
-                  {previewError}
-                </div>
-              )}
-              {!previewLoading && preview && (
-                <div className="border border-border rounded-sm bg-card/60 p-3 h-full">
-                  {preview.kind === "image" && preview.url && (
-                    <div className="flex justify-center">
-                      <img
-                        src={preview.url}
-                        alt={preview.name}
-                        className="max-h-[60vh] object-contain"
-                      />
-                    </div>
-                  )}
-                  {preview.kind === "pdf" && preview.url && (
-                    <div className="h-[60vh]">
-                      <iframe
-                        src={preview.url}
-                        title={preview.name}
-                        className="w-full h-full border border-border rounded-sm"
-                      />
-                    </div>
-                  )}
-                  {preview.kind === "text" && preview.content && (
-                    <pre className="text-[12px] whitespace-pre-wrap break-words font-mono">
-                      {preview.content}
-                    </pre>
-                  )}
-                  {preview.kind === "unsupported" && !previewError && (
-                    <div className="text-muted-foreground">
-                      Preview not available for this file type.
-                    </div>
-                  )}
-                </div>
-              )}
+          </label>
+
+          <label className="text-[12px] text-foreground/90">
+            Agent Token
+            <div className="relative mt-1">
+              <Input
+                className="pr-10"
+                type={showAgentToken ? "text" : "password"}
+                value={agentToken}
+                onChange={(e) => setAgentToken(e.target.value)}
+              />
+              <button
+                type="button"
+                aria-label={
+                  showAgentToken ? "Hide agent token" : "Show agent token"
+                }
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => setShowAgentToken((v) => !v)}
+              >
+                {showAgentToken ? (
+                  <EyeOff className="h-4 w-4" />
+                ) : (
+                  <Eye className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2 border-b border-border pb-2">
+          <button
+            className={`px-3 py-1.5 text-[12px] rounded-sm border ${
+              activeTab === "register"
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setActiveTab("register")}
+          >
+            Register Devices
+          </button>
+          <button
+            className={`px-3 py-1.5 text-[12px] rounded-sm border ${
+              activeTab === "new-task"
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setActiveTab("new-task")}
+          >
+            Add New Tasks
+          </button>
+        </div>
+
+        {activeTab === "register" ? (
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="text-[12px] text-foreground/90">
+              Device ID
+              <Input
+                className="mt-1"
+                value={deviceId}
+                onChange={(e) => setDeviceId(e.target.value)}
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Hostname
+              <Input
+                className="mt-1"
+                value={hostname}
+                onChange={(e) => setHostname(e.target.value)}
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Agent Version
+              <Input
+                className="mt-1"
+                value={agentVersion}
+                onChange={(e) => setAgentVersion(e.target.value)}
+              />
+            </label>
+
+            <div className="md:col-span-3 flex flex-wrap gap-2">
+              <Button onClick={handleRegisterDevice} disabled={loading}>
+                Register Device
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleApproveDevice}
+                disabled={loading}
+              >
+                Approve Device
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleListDevices}
+                disabled={loading}
+              >
+                List Devices
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-[12px] text-foreground/90 md:col-span-2">
+              Search Query
+              <Input
+                className="mt-1"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90 md:col-span-2">
+              Target Paths (comma separated)
+              <Input
+                className="mt-1"
+                value={pathsInput}
+                onChange={(e) => setPathsInput(e.target.value)}
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Expires In Hours (max 24)
+              <Input
+                className="mt-1"
+                type="number"
+                min={1}
+                max={24}
+                value={expiresInHours}
+                onChange={(e) =>
+                  setExpiresInHours(Number(e.target.value || 24))
+                }
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Task Group ID (results)
+              <Input
+                className="mt-1"
+                value={taskGroupId}
+                onChange={(e) => setTaskGroupId(e.target.value)}
+              />
+            </label>
+
+            <div className="md:col-span-2 flex flex-wrap gap-2">
+              <Button onClick={handleCreateTask} disabled={loading}>
+                Create Task
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleFetchTaskResults}
+                disabled={loading}
+              >
+                Fetch Task Group Results
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {statusText ? (
+          <div className="rounded-sm border border-primary/30 bg-primary/10 px-3 py-2 text-[12px] text-foreground">
+            {statusText}
+          </div>
+        ) : null}
+
+        {errorText ? (
+          <div className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+            {errorText}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="bg-card border border-border rounded-sm p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[13px] font-semibold text-foreground">
+            Task Details
+          </h3>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              clearMessages();
+              const res = await listTasks(apiConfig, { limit: 250 });
+              if (!res.ok || !res.data) {
+                setErrorText(`Task details load failed: ${res.error}`);
+                return;
+              }
+              setTaskHistory(res.data.tasks || []);
+              setStatusText(`Loaded ${res.data.tasks?.length || 0} tasks.`);
+            }}
+            disabled={loading}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
+          <div className="bg-muted/50 border border-border rounded-sm p-3">
+            <div className="text-muted-foreground">Pending Tasks</div>
+            <div className="text-xl font-semibold text-foreground mt-1">
+              {pendingTasks.length}
+            </div>
+          </div>
+          <div className="bg-muted/50 border border-border rounded-sm p-3">
+            <div className="text-muted-foreground">History Tasks</div>
+            <div className="text-xl font-semibold text-foreground mt-1">
+              {historyTasks.length}
+            </div>
+          </div>
+          <div className="bg-muted/50 border border-border rounded-sm p-3">
+            <div className="text-muted-foreground">Registered Devices</div>
+            <div className="text-xl font-semibold text-foreground mt-1">
+              {devices.length}
             </div>
           </div>
         </div>
-      )}
+
+        <div className="space-y-2">
+          {taskHistory.length > 0
+            ? taskHistory.map((task) => {
+                const expanded = !!expandedTaskIds[task.id];
+                return (
+                  <div
+                    key={task.id}
+                    className="border border-border rounded-sm overflow-hidden"
+                  >
+                    <button
+                      className="w-full flex items-start justify-between gap-3 px-3 py-2 text-left bg-muted/20 hover:bg-muted/40"
+                      onClick={() => toggleTaskExpand(task.id)}
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2 text-[12px]">
+                          <span className="font-medium text-foreground">
+                            {task.query || "-"}
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${statusClass(task.status)}`}
+                          >
+                            {task.status}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-muted-foreground font-mono-data break-all">
+                          Task ID: {task.id}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Device: {task.device_id || "-"} | Scanned Files:{" "}
+                          {task.scanned_files} | Matches: {task.matches_count}
+                        </div>
+                      </div>
+                      <ChevronDown
+                        className={`h-4 w-4 mt-1 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`}
+                      />
+                    </button>
+
+                    {expanded ? (
+                      <div className="px-3 py-3 bg-card border-t border-border text-[12px] space-y-3">
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <div className="text-muted-foreground">
+                            Created:{" "}
+                            <span className="text-foreground">
+                              {formatDate(task.created_at)}
+                            </span>
+                          </div>
+                          <div className="text-muted-foreground">
+                            Expires:{" "}
+                            <span className="text-foreground">
+                              {formatDate(task.expires_at)}
+                            </span>
+                          </div>
+                          <div className="text-muted-foreground">
+                            Completed:{" "}
+                            <span className="text-foreground">
+                              {formatDate(task.completed_at)}
+                            </span>
+                          </div>
+                          <div className="text-muted-foreground break-all">
+                            Group:{" "}
+                            <span className="text-foreground">
+                              {task.task_group_id || "-"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+                            Paths
+                          </div>
+                          <div className="text-[12px] text-foreground font-mono-data break-all">
+                            {(task.paths || []).join(", ") || "-"}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+                            PII Detected
+                          </div>
+                          {task.pii_types?.length ? (
+                            <div className="flex flex-wrap gap-1">
+                              {task.pii_types.map((t) => (
+                                <span
+                                  key={`${task.id}-${t}`}
+                                  className="px-2 py-0.5 text-[10px] bg-primary/15 text-primary border border-primary/30 rounded-sm"
+                                >
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-muted-foreground">
+                              No PII types recorded.
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">
+                            Detailed Matches
+                          </div>
+                          {!task.matches?.length ? (
+                            <div className="text-muted-foreground">
+                              No matches available.
+                            </div>
+                          ) : (
+                            <div className="max-h-52 overflow-auto rounded-sm border border-border bg-muted/30">
+                              <table className="w-full text-[11px]">
+                                <thead className="sticky top-0 bg-muted">
+                                  <tr>
+                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                      Type
+                                    </th>
+                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                      Value
+                                    </th>
+                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                      File
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {task.matches.map((m, idx) => (
+                                    <tr
+                                      key={`${task.id}-m-${idx}`}
+                                      className="border-t border-border"
+                                    >
+                                      <td className="px-2 py-1 text-foreground">
+                                        {m.type}
+                                      </td>
+                                      <td className="px-2 py-1 text-foreground">
+                                        {m.value}
+                                      </td>
+                                      <td className="px-2 py-1 text-muted-foreground break-all">
+                                        {m.file}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
+            : null}
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="bg-card border border-border rounded-sm p-3">
+          <h3 className="mb-2 text-[12px] font-semibold text-foreground">
+            Registered Devices
+          </h3>
+          {isListingDevices ? (
+            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
+              Loading registered devices...
+            </div>
+          ) : devices.length === 0 ? (
+            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
+              No registered devices available.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-64 overflow-auto pr-1">
+              {devices.map((device) => (
+                <div
+                  key={device.device_id}
+                  className="rounded-sm border border-border bg-muted/20 p-3 text-[12px]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium text-foreground break-all">
+                      {device.device_id}
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
+                        device.approved
+                          ? "border-primary/30 bg-primary/15 text-primary"
+                          : "border-warning/30 bg-warning/15 text-warning"
+                      }`}
+                    >
+                      {device.approved ? "Approved" : "Pending"}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid gap-1 text-muted-foreground">
+                    <div>
+                      Hostname:{" "}
+                      <span className="text-foreground">
+                        {device.hostname || "-"}
+                      </span>
+                    </div>
+                    <div>
+                      Version:{" "}
+                      <span className="text-foreground">
+                        {device.agent_version || "-"}
+                      </span>
+                    </div>
+                    <div>
+                      Org:{" "}
+                      <span className="text-foreground">
+                        {device.organisation_id || orgId}
+                      </span>
+                    </div>
+                    <div>
+                      Last Seen:{" "}
+                      <span className="text-foreground">
+                        {formatDate(device.last_seen)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-card border border-border rounded-sm p-3">
+          <h3 className="mb-2 text-[12px] font-semibold text-foreground">
+            Selected Task Group Result
+          </h3>
+          <pre className="max-h-64 overflow-auto rounded-sm border border-border bg-muted p-3 text-[11px] text-foreground">
+            {JSON.stringify(taskResultGroup, null, 2)}
+          </pre>
+        </div>
+      </div>
     </div>
   );
 }
