@@ -1,4 +1,4 @@
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from datetime import datetime
@@ -37,7 +37,7 @@ requests_db = [
     }
 ]
 
-@app.get("/requests")
+@router.get("/requests")
 def get_requests():
     formatted = []
 
@@ -55,7 +55,7 @@ def get_requests():
     return {"requests": formatted}
 
 # process request
-@app.post("/dpdp/request")
+@router.post("/dpdp/request")
 async def handle_request(req: dict):
 
     req_type = req.get("type")
@@ -84,7 +84,7 @@ async def handle_request(req: dict):
 
 
 # Scan entire cloud (mock S3)
-@app.post("/scan-cloud")
+@router.post("/scan-cloud")
 async def scan_cloud():
     files = list_files()
     results = []
@@ -121,7 +121,7 @@ async def scan_cloud():
 
 
 # Get all scanned results
-@app.get("/results")
+@router.get("/results")
 async def get_results():
     data = list(collection.find({}, {"_id": 0}))
     return {"results": data}
@@ -131,7 +131,7 @@ async def get_results():
 class SearchRequest(BaseModel):
     query: str  # email / phone / name
 
-@app.post("/search")
+@router.post("/search")
 async def search_data(req: SearchRequest):
     query = req.query.lower()
     matched_files = []
@@ -160,7 +160,7 @@ async def search_data(req: SearchRequest):
     }
 
 # Health check
-@app.get("/")
+@router.get("/")
 async def root():
     return {"status": "Backend running smoothly!"}
 
@@ -222,7 +222,7 @@ def update_data(identifier, new_value):
     return len(files)
 
 # Logs
-@app.get("/logs")
+@router.get("/logs")
 async def get_logs():
     logs = list(logs_collection.find({}, {"_id": 0}))
     return {"logs": logs}

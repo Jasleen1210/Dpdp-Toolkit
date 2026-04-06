@@ -6,10 +6,10 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta, timezone
 
-from backend.api.cloud_api import router as cloud_router
-from services.detector import detect_pii_full
+from backend.api.cloud_api.api_s3 import router as cloud_router
+from backend.services.detector import detect_pii_full
 
-from db import (
+from backend.services.local.local_db import (
     devices_collection,
     device_tasks_collection,
     device_results_collection,
