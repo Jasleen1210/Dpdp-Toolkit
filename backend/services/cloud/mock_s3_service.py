@@ -1,6 +1,6 @@
 import os
 
-BASE_DIR = "mock_s3"
+BASE_DIR = "backend/mock_s3"
 
 def list_files():
     files = []

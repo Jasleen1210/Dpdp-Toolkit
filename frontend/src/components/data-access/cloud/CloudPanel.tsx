@@ -25,13 +25,17 @@ export default function CloudPanel() {
   try {
     setLoading(true);
 
-    const res = await fetch("http://127.0.0.1:8000/scan-cloud", {
+    const res = await fetch("http://127.0.0.1:8000/cloud/scan-cloud", {
       method: "POST",
     });
 
     const data = await res.json();
-    console.log("SCAN RESPONSE:", data);
-
+    if (!data.results) {
+      console.error("Invalid response:", data);
+    }else{
+        console.log("SCAN RESPONSE:", data);
+      }
+    
     const formatted = data.results.map((file: any, index: number) => ({
       id: index,
       provider: "AWS S3",
