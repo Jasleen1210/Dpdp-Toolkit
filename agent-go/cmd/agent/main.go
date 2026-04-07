@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"log"
+	"runtime"
+	"strings"
 	"time"
 
 	"dpdp-toolkit/agent-go/internal/client"
 	"dpdp-toolkit/agent-go/internal/config"
 	"dpdp-toolkit/agent-go/internal/device"
+	"dpdp-toolkit/agent-go/internal/gui"
 	"dpdp-toolkit/agent-go/internal/scanner"
 	"dpdp-toolkit/agent-go/internal/types"
 )
@@ -20,6 +23,19 @@ func main() {
 	hostname := device.ResolveHostname()
 
 	log.Printf("agent starting: device_id=%s host=%s server=%s", deviceID, hostname, cfg.ServerURL)
+
+	// On Windows with default scan paths, prompt user for folder selection via GUI
+	if runtime.GOOS == "windows" && len(cfg.ScanPaths) > 0 && isUsingDefaultPaths(cfg.ScanPaths) {
+		log.Printf("No custom scan paths configured. Prompting for folder selection...")
+		selectedPath := gui.PromptFolderSelectionWindows(cfg.ScanPaths, true)
+		if selectedPath != "" {
+			log.Printf("User selected path: %s", selectedPath)
+			cfg.ScanPaths = strings.Split(selectedPath, ",")
+			for i, p := range cfg.ScanPaths {
+				cfg.ScanPaths[i] = strings.TrimSpace(p)
+			}
+		}
+	}
 
 	apiClient := client.New(cfg)
 	scanEngine := scanner.New(cfg)
@@ -93,4 +109,25 @@ func runCycle(ctx context.Context, apiClient *client.Client, scanEngine *scanner
 	}
 
 	return nextCursor
+}
+
+// isUsingDefaultPaths checks if the scan paths are system defaults (not user-configured)
+func isUsingDefaultPaths(paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	// Check if all paths are drive roots (C:\, D:\, etc.) or Unix root
+	for _, p := range paths {
+		if len(p) == 3 && p[1] == ':' && p[2] == '\\' {
+			// Windows drive root like C:\
+			continue
+		}
+		if p == "/" {
+			// Unix root
+			continue
+		}
+		// If any custom path exists, consider it user-configured
+		return false
+	}
+	return true
 }

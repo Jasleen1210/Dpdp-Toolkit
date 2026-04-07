@@ -1,10 +1,20 @@
 import re
-import spacy
+try:
+    import spacy
+except Exception:
+    spacy = None
 
-nlp = spacy.load("en_core_web_sm")
+try:
+    # Keep service startup resilient if the small English model is not installed.
+    nlp = spacy.load("en_core_web_sm") if spacy is not None else None
+except Exception:
+    nlp = None
 
 # name 
 def detect_names(text):
+    if nlp is None:
+        return []
+
     doc = nlp(text)
     names = []
 

@@ -1,19 +1,56 @@
 import { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { NAV_ITEMS } from "@/lib/constants";
 import { useTheme } from "@/components/ThemeProvider";
-import { Menu, X, Search, Bell, User, Sun, Moon, ChevronDown, ChevronRight, Shield } from "lucide-react";
+import {
+  Menu,
+  X,
+  Search,
+  Bell,
+  User,
+  Sun,
+  Moon,
+  ChevronDown,
+  ChevronRight,
+  Shield,
+} from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useAppDispatch } from "@/redux/hooks";
+import { logoutUser } from "@/redux/authSlice";
 import { motion, AnimatePresence } from "framer-motion";
 
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const location = useLocation();
   const [expandedItem, setExpandedItem] = useState<string | null>(null);
 
-  const isActive = (href: string) => location.pathname === href;
-  const isParentActive = (item: typeof NAV_ITEMS[0]) =>
-    item.subtabs.some((s) => location.pathname === s.href);
+  const parseHref = (href: string) => {
+    const [pathname, search = ""] = href.split("?");
+    return { pathname, search: search ? `?${search}` : "" };
+  };
+
+  const isActive = (href: string) => {
+    const target = parseHref(href);
+    if (target.search) {
+      return (
+        location.pathname === target.pathname &&
+        location.search === target.search
+      );
+    }
+    return location.pathname === target.pathname;
+  };
+
+  const isParentActive = (item: (typeof NAV_ITEMS)[0]) =>
+    item.subtabs.some((s) => {
+      const target = parseHref(s.href);
+      return location.pathname === target.pathname;
+    });
 
   return (
     <div className="flex flex-col h-full">
@@ -23,7 +60,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <div className="w-7 h-7 bg-primary rounded-sm flex items-center justify-center">
             <Shield className="w-4 h-4 text-primary-foreground" />
           </div>
-          <span className="font-bold text-sm tracking-tight text-foreground">DPDP COMMAND</span>
+          <span className="font-bold text-sm tracking-tight text-foreground">
+            DPDP COMMAND
+          </span>
         </Link>
       </div>
 
@@ -36,7 +75,11 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           return (
             <div key={item.label}>
               <button
-                onClick={() => setExpandedItem(expanded && expandedItem === item.label ? null : item.label)}
+                onClick={() =>
+                  setExpandedItem(
+                    expanded && expandedItem === item.label ? null : item.label,
+                  )
+                }
                 className={`w-full flex items-center gap-2.5 px-3 py-2 text-[13px] font-medium rounded-sm transition-colors ${
                   active
                     ? "bg-sidebar-accent text-primary"
@@ -97,18 +140,33 @@ function ThemeToggle() {
     <div className="p-4 border-t border-sidebar-border">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
-          {theme === "light" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          {theme === "light" ? (
+            <Sun className="w-3.5 h-3.5" />
+          ) : (
+            <Moon className="w-3.5 h-3.5" />
+          )}
           <span className="uppercase tracking-wider">{theme} mode</span>
         </div>
-        <Switch checked={theme === "dark"} onCheckedChange={toggleTheme} className="scale-75" />
+        <Switch
+          checked={theme === "dark"}
+          onCheckedChange={toggleTheme}
+          className="scale-75"
+        />
       </div>
     </div>
   );
 }
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
+  const dispatch = useAppDispatch();
+  const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+
+  const handleLogout = async () => {
+    await dispatch(logoutUser());
+    navigate("/login", { replace: true });
+  };
 
   return (
     <div className="min-h-screen flex w-full">
@@ -124,7 +182,10 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           {/* Mobile hamburger */}
           <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
             <SheetTrigger asChild>
-              <button className="lg:hidden p-1.5 rounded-sm hover:bg-muted" aria-label="Open menu">
+              <button
+                className="lg:hidden p-1.5 rounded-sm hover:bg-muted"
+                aria-label="Open menu"
+              >
                 <Menu className="w-5 h-5" />
               </button>
             </SheetTrigger>
@@ -147,20 +208,49 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
           {/* Right actions */}
           <div className="flex items-center gap-1">
-            <button className="relative p-2 rounded-sm hover:bg-muted" aria-label="Notifications">
+            <button
+              className="relative p-2 rounded-sm hover:bg-muted"
+              aria-label="Notifications"
+            >
               <Bell className="w-4 h-4 text-muted-foreground" />
               <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
             </button>
-            <button className="p-2 rounded-sm hover:bg-muted" aria-label="Profile">
-              <User className="w-4 h-4 text-muted-foreground" />
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="p-2 rounded-sm hover:bg-muted"
+                  aria-label="Profile"
+                >
+                  <User className="w-4 h-4 text-muted-foreground" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-40">
+                <DropdownMenuItem asChild>
+                  <Link to="/profile" className="w-full text-left">
+                    Profile
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to="/settings" className="w-full text-left">
+                    Settings
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <button
+                    type="button"
+                    className="w-full text-left"
+                    onClick={() => void handleLogout()}
+                  >
+                    Log out
+                  </button>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-x-hidden">
-          {children}
-        </main>
+        <main className="flex-1 overflow-x-hidden">{children}</main>
 
         {/* Footer */}
         <AppFooter />
@@ -174,34 +264,77 @@ function AppFooter() {
     <footer className="border-t border-border p-6 lg:p-8 bg-muted/30">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6 lg:gap-8">
         <div>
-          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Product</h4>
+          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+            Product
+          </h4>
           <ul className="space-y-1.5">
             {["About Platform", "Release Notes", "Roadmap"].map((l) => (
-              <li key={l}><a href="#" className="text-[12px] text-muted-foreground hover:text-foreground">{l}</a></li>
+              <li key={l}>
+                <a
+                  href="#"
+                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                >
+                  {l}
+                </a>
+              </li>
             ))}
           </ul>
         </div>
         <div>
-          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Compliance</h4>
+          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+            Compliance
+          </h4>
           <ul className="space-y-1.5">
-            {["DPDP Info", "Privacy Policy", "Terms of Service", "Security Certs (ISO, SOC2)"].map((l) => (
-              <li key={l}><a href="#" className="text-[12px] text-muted-foreground hover:text-foreground">{l}</a></li>
+            {[
+              "DPDP Info",
+              "Privacy Policy",
+              "Terms of Service",
+              "Security Certs (ISO, SOC2)",
+            ].map((l) => (
+              <li key={l}>
+                <a
+                  href="#"
+                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                >
+                  {l}
+                </a>
+              </li>
             ))}
           </ul>
         </div>
         <div>
-          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Support</h4>
+          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+            Support
+          </h4>
           <ul className="space-y-1.5">
-            {["Help Center", "API Docs", "Contact Support", "Status Page"].map((l) => (
-              <li key={l}><a href="#" className="text-[12px] text-muted-foreground hover:text-foreground">{l}</a></li>
-            ))}
+            {["Help Center", "API Docs", "Contact Support", "Status Page"].map(
+              (l) => (
+                <li key={l}>
+                  <a
+                    href="#"
+                    className="text-[12px] text-muted-foreground hover:text-foreground"
+                  >
+                    {l}
+                  </a>
+                </li>
+              ),
+            )}
           </ul>
         </div>
         <div>
-          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">Company</h4>
+          <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-3">
+            Company
+          </h4>
           <ul className="space-y-1.5">
             {["About", "Careers", "Blog"].map((l) => (
-              <li key={l}><a href="#" className="text-[12px] text-muted-foreground hover:text-foreground">{l}</a></li>
+              <li key={l}>
+                <a
+                  href="#"
+                  className="text-[12px] text-muted-foreground hover:text-foreground"
+                >
+                  {l}
+                </a>
+              </li>
             ))}
           </ul>
         </div>

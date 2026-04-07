@@ -30,7 +30,6 @@ export type TaskSummary = {
 
 export type CreateTaskRequest = {
   query: string;
-  paths?: string[];
   device_ids?: string[];
   expires_in_hours?: number;
 };
@@ -53,6 +52,18 @@ export type RegisterDeviceResponse = {
   organisation_id: string;
   approved: boolean;
   message: string;
+};
+
+export type DeviceApprovalRequestItem = {
+  id?: string;
+  device_id: string;
+  organisation_id: string;
+  hostname?: string;
+  agent_version?: string;
+  status: "pending" | "approved" | "rejected" | string;
+  created_at?: string;
+  updated_at?: string;
+  resolved_at?: string;
 };
 
 export type ApproveDeviceRequest = {
@@ -96,6 +107,16 @@ export type TaskHistoryItem = {
   matches: TaskResultMatch[];
 };
 
+export type OrganisationInfo = {
+  id: string;
+  name: string;
+  role?: string;
+  invite_code?: string;
+  device_enrollment_code?: string;
+  agent_token?: string;
+  admin_api_key?: string;
+};
+
 export type ApiResult<T> = {
   ok: boolean;
   status: number;
@@ -105,8 +126,15 @@ export type ApiResult<T> = {
 
 type AuthKind = "admin" | "agent";
 
-const DEFAULT_BASE_URL =
-  (import.meta.env.VITE_API_URL as string | undefined)?.trim() || "";
+function requireEnv(name: keyof ImportMetaEnv): string {
+  const value = import.meta.env[name];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value.trim();
+}
+
+const DEFAULT_BASE_URL = requireEnv("VITE_API_URL");
 
 function normalizeBaseUrl(baseUrl?: string): string {
   const raw = (baseUrl || DEFAULT_BASE_URL).trim();
@@ -154,6 +182,7 @@ async function requestJSON<T>(
   init: RequestInit,
 ): Promise<ApiResult<T>> {
   try {
+    const method = (init.method || "GET").toUpperCase();
     const res = await fetch(url, init);
     const text = await res.text();
 
@@ -167,6 +196,12 @@ async function requestJSON<T>(
     }
 
     if (!res.ok) {
+      console.error("localAgent request failed", {
+        url,
+        method,
+        status: res.status,
+        response: text,
+      });
       return {
         ok: false,
         status: res.status,
@@ -177,6 +212,11 @@ async function requestJSON<T>(
 
     return { ok: true, status: res.status, data };
   } catch (err) {
+    console.error("localAgent request network error", {
+      url,
+      method: (init.method || "GET").toUpperCase(),
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       ok: false,
       status: 0,
@@ -238,14 +278,12 @@ export async function listDevices(
 
   const base = normalizeBaseUrl(config.baseUrl);
   const headers = { "X-Org-Id": config.orgId };
+  const url = `${base}/devices?organisation_id=${encodeURIComponent(config.orgId)}`;
 
-  const primaryResult = await requestJSON<{ devices: Device[] }>(
-    `${base}/devices`,
-    {
-      method: "GET",
-      headers,
-    },
-  );
+  const primaryResult = await requestJSON<{ devices: Device[] }>(url, {
+    method: "GET",
+    headers,
+  });
 
   if (primaryResult.ok || !base.includes(":8000")) {
     return primaryResult;
@@ -256,10 +294,60 @@ export async function listDevices(
   }
 
   return requestJSON<{ devices: Device[] }>(
-    `${base.replace(":8000", ":8001")}/devices`,
+    `${base.replace(":8000", ":8001")}/devices?organisation_id=${encodeURIComponent(config.orgId)}`,
     {
       method: "GET",
       headers,
+    },
+  );
+}
+
+export async function listOrganisationDevices(
+  config: LocalAgentApiConfig,
+  organisationId: string,
+): Promise<ApiResult<{ organisation: OrganisationInfo; devices: Device[] }>> {
+  if (!organisationId.trim()) {
+    return {
+      ok: false,
+      status: 400,
+      data: null,
+      error: "Organisation ID is required",
+    };
+  }
+
+  const base = normalizeBaseUrl(config.baseUrl);
+  const headers = { "X-Org-Id": organisationId };
+
+  return requestJSON<{ organisation: OrganisationInfo; devices: Device[] }>(
+    `${base}/organisations/${encodeURIComponent(organisationId)}/devices`,
+    {
+      method: "GET",
+      headers,
+    },
+  );
+}
+
+export async function listDeviceApprovalRequests(
+  config: LocalAgentApiConfig,
+  status = "pending",
+): Promise<ApiResult<{ requests: DeviceApprovalRequestItem[] }>> {
+  const validationError = validateAuth(config, "admin");
+  if (validationError) {
+    return { ok: false, status: 400, data: null, error: validationError };
+  }
+
+  const base = normalizeBaseUrl(config.baseUrl);
+  const qs = new URLSearchParams({
+    organisation_id: config.orgId,
+    status,
+    limit: "200",
+  });
+
+  return requestJSON<{ requests: DeviceApprovalRequestItem[] }>(
+    `${base}/devices/approval-requests?${qs.toString()}`,
+    {
+      method: "GET",
+      headers: jsonHeaders(config, "admin"),
     },
   );
 }
@@ -354,5 +442,24 @@ export async function listTasks(
   return requestJSON<{ tasks: TaskHistoryItem[] }>(url, {
     method: "GET",
     headers: jsonHeaders(config, "admin"),
+  });
+}
+
+export async function getMyOrganisations(
+  config: LocalAgentApiConfig,
+  token: string,
+): Promise<ApiResult<{ organisations: OrganisationInfo[] }>> {
+  const trimmedToken = token.trim();
+  if (!trimmedToken) {
+    return { ok: false, status: 401, data: null, error: "Missing auth token" };
+  }
+
+  const url = `${normalizeBaseUrl(config.baseUrl)}/auth/organisations/mine`;
+  return requestJSON<{ organisations: OrganisationInfo[] }>(url, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${trimmedToken}`,
+    },
   });
 }

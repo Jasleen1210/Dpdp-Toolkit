@@ -1,8 +1,17 @@
 import {
-  LayoutDashboard, Database, FileText, Shield, CheckSquare,
-  Clock, AlertTriangle, Users, ClipboardList, Server, Settings,
+  LayoutDashboard,
+  Database,
+  FileText,
+  Shield,
+  CheckSquare,
+  Clock,
+  AlertTriangle,
+  Users,
+  ClipboardList,
+  Server,
+  Settings,
   FolderSearch,
-  LucideIcon
+  LucideIcon,
 } from "lucide-react";
 
 export interface NavItem {
@@ -30,9 +39,9 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/access-data",
     icon: FolderSearch,
     subtabs: [
-      { label: "Local Files", href: "/access-data" },
-      { label: "Database", href: "/access-data/db" },
-      { label: "Cloud Storage", href: "/access-data/cloud" },
+      { label: "Local Files", href: "/access-data?tab=local" },
+      { label: "Database", href: "/access-data?tab=db" },
+      { label: "Cloud Storage", href: "/access-data?tab=cloud" },
     ],
   },
   {

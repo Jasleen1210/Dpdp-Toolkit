@@ -2,9 +2,18 @@ package config
 
 import (
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
+)
+
+var (
+	BuiltServerURL string
+	BuiltAPIKey    string
+	BuiltOrgID     string
 )
 
 type Config struct {
@@ -22,31 +31,41 @@ type Config struct {
 }
 
 func Load() Config {
-	poll := parseDuration(getEnv("POLL_INTERVAL", "5m"), 5*time.Minute)
-	scanPaths := splitCSV(getEnv("SCAN_PATHS", "C:/Users"))
-	exts := splitCSV(getEnv("INCLUDE_EXTENSIONS", "*"))
-	maxSize := parseInt64(getEnv("MAX_FILE_SIZE_MB", "5"), 5)
+	_ = godotenv.Load()
+
+	poll := mustParseDuration(firstNonEmpty(os.Getenv("POLL_INTERVAL"), "30s"))
+	scanPaths := splitCSV(firstNonEmpty(os.Getenv("SCAN_PATHS"), strings.Join(defaultScanPaths(), ",")))
+	if len(scanPaths) == 0 {
+		scanPaths = defaultScanPaths()
+	}
+	exts := splitCSV(firstNonEmpty(os.Getenv("INCLUDE_EXTENSIONS"), "*"))
+	if len(exts) == 0 {
+		exts = []string{"*"}
+	}
+	maxSize := mustParseInt64(firstNonEmpty(os.Getenv("MAX_FILE_SIZE_MB"), "5"))
 
 	return Config{
-		ServerURL:     strings.TrimRight(getEnv("SERVER_URL", "http://localhost:8000"), "/"),
-		APIKey:        getEnv("API_KEY", ""),
-		OrgID:         getEnv("ORG_ID", "dpdp-org"),
+		ServerURL:     strings.TrimRight(firstNonEmpty(BuiltServerURL, os.Getenv("SERVER_URL"), "http://127.0.0.1:8000"), "/"),
+		APIKey:        firstNonEmpty(BuiltAPIKey, os.Getenv("API_KEY")),
+		OrgID:         firstNonEmpty(BuiltOrgID, os.Getenv("ORG_ID")),
 		PollInterval:  poll,
-		DeviceID:      getEnv("DEVICE_ID", ""),
+		DeviceID:      firstNonEmpty(os.Getenv("DEVICE_ID"), ""),
 		ScanPaths:     scanPaths,
 		IncludeExts:   normalizeExtMap(exts),
 		MaxFileSizeMB: maxSize,
-		RegisterPath:  normalizePath(getEnv("REGISTER_PATH", "/devices/register")),
-		TasksPath:     normalizePath(getEnv("TASKS_PATH", "/devices/tasks")),
-		ResultsPath:   normalizePath(getEnv("RESULTS_PATH", "/results")),
+		RegisterPath:  normalizePath(firstNonEmpty(os.Getenv("REGISTER_PATH"), "/devices/register")),
+		TasksPath:     normalizePath(firstNonEmpty(os.Getenv("TASKS_PATH"), "/devices/tasks")),
+		ResultsPath:   normalizePath(firstNonEmpty(os.Getenv("RESULTS_PATH"), "/results")),
 	}
 }
 
-func getEnv(key, fallback string) string {
-	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
-		return v
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
 	}
-	return fallback
+	return ""
 }
 
 func splitCSV(v string) []string {
@@ -80,18 +99,34 @@ func normalizeExtMap(exts []string) map[string]struct{} {
 	return m
 }
 
-func parseDuration(v string, fallback time.Duration) time.Duration {
+func defaultScanPaths() []string {
+	if runtime.GOOS == "windows" {
+		paths := make([]string, 0, 4)
+		for drive := 'C'; drive <= 'Z'; drive++ {
+			root := string(drive) + ":\\"
+			if _, err := os.Stat(root); err == nil {
+				paths = append(paths, root)
+			}
+		}
+		if len(paths) > 0 {
+			return paths
+		}
+	}
+	return []string{"/"}
+}
+
+func mustParseDuration(v string) time.Duration {
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		return fallback
+		panic("invalid POLL_INTERVAL: " + err.Error())
 	}
 	return d
 }
 
-func parseInt64(v string, fallback int64) int64 {
+func mustParseInt64(v string) int64 {
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return fallback
+		panic("invalid MAX_FILE_SIZE_MB: " + err.Error())
 	}
 	return n
 }

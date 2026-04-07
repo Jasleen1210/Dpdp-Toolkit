@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React from "react";
+import { useSearchParams } from "react-router-dom";
 import { HardDrive, Database, Cloud } from "lucide-react";
 import LocalFilesPanel from "../components/data-access/local/LocalFilesPanel";
 import DatabasePanel from "../components/data-access/database/DatabasePanel";
@@ -70,7 +71,13 @@ function ModeSelector({
 }
 
 export default function DataAccessPage() {
-  const [mode, setMode] = useState<AccessMode>("local");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = searchParams.get("tab");
+  const mode: AccessMode = tab === "db" || tab === "cloud" ? tab : "local";
+
+  const setMode = (nextMode: AccessMode) => {
+    setSearchParams({ tab: nextMode }, { replace: true });
+  };
 
   return (
     <div className="p-4 lg:p-6 space-y-6">
@@ -94,4 +101,3 @@ export default function DataAccessPage() {
     </div>
   );
 }
-  

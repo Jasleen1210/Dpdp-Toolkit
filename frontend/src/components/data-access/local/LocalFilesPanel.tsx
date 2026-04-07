@@ -1,27 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Eye, EyeOff, RefreshCw } from "lucide-react";
+import { ChevronDown, RefreshCw } from "lucide-react";
 import {
   approveDevice,
   createTask,
+  getMyOrganisations,
   getTaskGroupResults,
-  listDevices,
+  listDeviceApprovalRequests,
+  listOrganisationDevices,
   listTasks,
-  registerDevice,
   type Device,
+  type DeviceApprovalRequestItem,
+  type OrganisationInfo,
   type TaskGroupResultResponse,
   type TaskHistoryItem,
 } from "../../../api/localAgent";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-const DEFAULT_BASE_URL =
-  (import.meta.env.VITE_API_URL as string | undefined)?.trim() || "";
-const DEFAULT_ORG_ID =
-  (import.meta.env.VITE_ORG_ID as string | undefined)?.trim() || "";
-const DEFAULT_ADMIN_KEY =
-  (import.meta.env.VITE_ADMIN_API_KEY as string | undefined)?.trim() || "";
-const DEFAULT_AGENT_TOKEN =
-  (import.meta.env.VITE_AGENT_TOKEN as string | undefined)?.trim() || "";
+import { useAppDispatch, useAppSelector } from "@/redux/hooks";
+import { setOrganisations } from "@/redux/authSlice";
 
 type ActiveTab = "register" | "new-task";
 
@@ -42,25 +38,35 @@ function statusClass(status: string): string {
 }
 
 export default function LocalFilesPanel() {
+  const dispatch = useAppDispatch();
   const [activeTab, setActiveTab] = useState<ActiveTab>("register");
+  const authOrgs = useAppSelector((state) => state.auth.organisations);
+  const authToken = useAppSelector((state) => state.auth.token);
+  const authMode = useAppSelector((state) => state.auth.mode);
 
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [orgId, setOrgId] = useState(DEFAULT_ORG_ID);
-  const [adminKey, setAdminKey] = useState(DEFAULT_ADMIN_KEY);
-  const [agentToken, setAgentToken] = useState(DEFAULT_AGENT_TOKEN);
+  const envBaseUrl = (
+    (import.meta.env.VITE_API_URL as string | undefined) || ""
+  ).trim();
 
-  const [deviceId, setDeviceId] = useState("TEST-LAPTOP-01");
-  const [hostname, setHostname] = useState("TEST-LAPTOP-01");
-  const [agentVersion, setAgentVersion] = useState("0.1.0");
+  const [baseUrl] = useState(envBaseUrl);
+  const [orgId, setOrgId] = useState("");
+  const [adminKey, setAdminKey] = useState("");
+  const [agentToken, setAgentToken] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [orgs, setOrgs] = useState<OrganisationInfo[]>([]);
+  const [selectedOrgId, setSelectedOrgId] = useState("");
+  const [orgDetailsOpen, setOrgDetailsOpen] = useState(false);
+  const [orgsLoading, setOrgsLoading] = useState(false);
 
   const [query, setQuery] = useState("rahul@gmail.com");
-  const [pathsInput, setPathsInput] = useState(
-    "d:/Coding/DPDP/Dpdp-Toolkit/backend/data",
-  );
   const [expiresInHours, setExpiresInHours] = useState(24);
+  const [taskTargetDeviceIds, setTaskTargetDeviceIds] = useState<string[]>([]);
 
-  const [taskGroupId, setTaskGroupId] = useState("");
+  const [latestTaskGroupId, setLatestTaskGroupId] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
+  const [approvalRequests, setApprovalRequests] = useState<
+    DeviceApprovalRequestItem[]
+  >([]);
   const [taskResultGroup, setTaskResultGroup] =
     useState<TaskGroupResultResponse | null>(null);
   const [taskHistory, setTaskHistory] = useState<TaskHistoryItem[]>([]);
@@ -73,12 +79,9 @@ export default function LocalFilesPanel() {
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
   const [isListingDevices, setIsListingDevices] = useState(false);
-  const [hasLoadedDefaults, setHasLoadedDefaults] = useState(false);
-  const [showAdminKey, setShowAdminKey] = useState(false);
-  const [showAgentToken, setShowAgentToken] = useState(false);
 
   const normalizedBaseUrl = useMemo(
-    () => baseUrl.replace(/\/$/, "").replace(":8000", ":8001"),
+    () => baseUrl.replace(/\/$/, ""),
     [baseUrl],
   );
 
@@ -107,9 +110,83 @@ export default function LocalFilesPanel() {
     setErrorText("");
   };
 
+  const approvedDevices = useMemo(
+    () => devices.filter((d) => d.approved && d.device_id),
+    [devices],
+  );
+
+  useEffect(() => {
+    const approvedSet = new Set(approvedDevices.map((d) => d.device_id));
+    setTaskTargetDeviceIds((prev) => prev.filter((id) => approvedSet.has(id)));
+  }, [approvedDevices]);
+
+  useEffect(() => {
+    if ((authOrgs || []).length > 0) {
+      setOrgs(authOrgs);
+      return;
+    }
+
+    if (authMode === "guest" || !authToken?.trim() || !baseUrl.trim()) {
+      setOrgs([]);
+      return;
+    }
+
+    let active = true;
+    const hydrateOrganisations = async () => {
+      setOrgsLoading(true);
+      const res = await getMyOrganisations(
+        {
+          baseUrl,
+          orgId: "",
+          adminKey: "",
+          agentToken: "",
+        },
+        authToken,
+      );
+
+      if (!active) return;
+      setOrgsLoading(false);
+
+      if (!res.ok || !res.data?.organisations) {
+        return;
+      }
+
+      const loaded = res.data.organisations;
+      setOrgs(loaded);
+      dispatch(setOrganisations(loaded));
+    };
+
+    void hydrateOrganisations();
+    return () => {
+      active = false;
+    };
+  }, [authOrgs, authMode, authToken, baseUrl, dispatch]);
+
+  useEffect(() => {
+    const organisations = orgs || [];
+
+    if (!organisations.length) {
+      setSelectedOrgId("");
+      setOrgId("");
+      setOrgName("");
+      setAdminKey("");
+      setAgentToken("");
+      return;
+    }
+
+    const selected: OrganisationInfo =
+      organisations.find((o) => o.id === selectedOrgId) || organisations[0];
+
+    setSelectedOrgId(selected.id);
+    setOrgId(selected.id);
+    setOrgName(selected.name || "");
+    setAdminKey(selected.admin_api_key || "");
+    setAgentToken(selected.agent_token || "");
+  }, [orgs, selectedOrgId]);
+
   const refreshDevices = async (showPlaceholder = true): Promise<Device[]> => {
     if (showPlaceholder) setIsListingDevices(true);
-    const res = await listDevices(apiConfig);
+    const res = await listOrganisationDevices(apiConfig, orgId);
     if (showPlaceholder) setIsListingDevices(false);
 
     if (!res.ok || !res.data) {
@@ -117,60 +194,66 @@ export default function LocalFilesPanel() {
       return [];
     }
 
+    setOrgName(res.data.organisation?.name || orgName);
+
     const loadedDevices = res.data.devices || [];
     setDevices(loadedDevices);
     return loadedDevices;
   };
 
+  const refreshApprovalRequests = async (): Promise<void> => {
+    const res = await listDeviceApprovalRequests(apiConfig, "pending");
+    if (!res.ok || !res.data) {
+      return;
+    }
+    setApprovalRequests(res.data.requests || []);
+  };
+
+  const refreshTaskHistory = async (): Promise<TaskHistoryItem[]> => {
+    const res = await listTasks(apiConfig, { limit: 250 });
+    if (!res.ok || !res.data) {
+      setErrorText(`Task details load failed: ${res.error}`);
+      return [];
+    }
+
+    const tasks = res.data.tasks || [];
+    setTaskHistory(tasks);
+    return tasks;
+  };
+
   useEffect(() => {
     const loadDefaults = async () => {
-      if (!orgId.trim()) {
+      if (!baseUrl.trim() || !orgId.trim()) {
         return;
       }
 
       setErrorText("");
       await refreshDevices(false);
-      setTaskHistory([]);
-      setHasLoadedDefaults(true);
+      await refreshApprovalRequests();
+      await refreshTaskHistory();
     };
 
     void loadDefaults();
-  }, [apiConfig, orgId, adminKey]);
+  }, [apiConfig, baseUrl, orgId]);
 
   const toggleTaskExpand = (taskId: string) => {
     setExpandedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }));
   };
 
-  const handleRegisterDevice = async () => {
+  const handleApproveDevice = async (deviceId: string) => {
     clearMessages();
     setLoading(true);
 
-    const res = await registerDevice(apiConfig, {
-      device_id: deviceId,
-      hostname,
-      agent_version: agentVersion,
-      organisation_id: orgId,
-    });
+    const targetDeviceId = deviceId.trim();
 
-    if (!res.ok) {
+    if (!targetDeviceId) {
       setLoading(false);
-      setErrorText(`Register failed: ${res.error}`);
+      setErrorText("Device ID is required to approve.");
       return;
     }
 
-    await refreshDevices(false);
-    setLoading(false);
-    setStatusText(
-      "Device registered. If not pre-approved, approve it from admin action.",
-    );
-  };
-
-  const handleApproveDevice = async () => {
-    clearMessages();
-    setLoading(true);
-
     const res = await approveDevice(apiConfig, {
-      device_id: deviceId,
+      device_id: targetDeviceId,
       approved: true,
     });
 
@@ -181,31 +264,35 @@ export default function LocalFilesPanel() {
     }
 
     await refreshDevices(false);
+    await refreshApprovalRequests();
     setLoading(false);
     setStatusText("Device approved for distributed scans.");
   };
 
-  const handleListDevices = async () => {
-    clearMessages();
-    const loadedDevices = await refreshDevices(true);
-    setStatusText(`Fetched ${loadedDevices.length} registered devices.`);
-  };
-
   const handleCreateTask = async () => {
     clearMessages();
+    const approvedDeviceIds = approvedDevices.map((d) => d.device_id);
+
+    if (!approvedDeviceIds.length) {
+      setErrorText(
+        "Create task failed: no approved devices are available in this organisation.",
+      );
+      return;
+    }
+
+    const targetDeviceIds = taskTargetDeviceIds.length
+      ? taskTargetDeviceIds
+      : approvedDeviceIds;
+
     setLoading(true);
 
-    const paths = pathsInput
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    const res = await createTask(apiConfig, {
+    const payload = {
       query,
-      paths,
-      device_ids: [deviceId],
       expires_in_hours: expiresInHours,
-    });
+      device_ids: targetDeviceIds,
+    };
+
+    const res = await createTask(apiConfig, payload);
 
     if (!res.ok || !res.data) {
       setLoading(false);
@@ -213,25 +300,28 @@ export default function LocalFilesPanel() {
       return;
     }
 
-    setTaskGroupId(res.data.task_group_id);
+    setLatestTaskGroupId(res.data.task_group_id);
+    await refreshTaskHistory();
 
     setLoading(false);
     setStatusText(
-      `Task group created: ${res.data.task_group_id} (${res.data.tasks_created} tasks)`,
+      `Task group created: ${res.data.task_group_id} (${res.data.tasks_created} tasks across ${targetDeviceIds.length} device(s))`,
     );
   };
 
   const handleFetchTaskResults = async () => {
     clearMessages();
 
-    if (!taskGroupId.trim()) {
-      setErrorText("Provide a task group id to fetch results.");
+    const targetTaskGroupId = latestTaskGroupId.trim();
+
+    if (!targetTaskGroupId) {
+      setErrorText("Create a task first to fetch its task group results.");
       return;
     }
 
     setLoading(true);
 
-    const res = await getTaskGroupResults(apiConfig, taskGroupId);
+    const res = await getTaskGroupResults(apiConfig, targetTaskGroupId);
 
     setLoading(false);
 
@@ -257,76 +347,6 @@ export default function LocalFilesPanel() {
           place.
         </p>
 
-        <div className="grid gap-3 md:grid-cols-2">
-          <label className="text-[12px] text-foreground/90">
-            Backend URL
-            <Input
-              className="mt-1"
-              value={baseUrl}
-              onChange={(e) => setBaseUrl(e.target.value)}
-            />
-          </label>
-
-          <label className="text-[12px] text-foreground/90">
-            Organisation ID
-            <Input
-              className="mt-1"
-              value={orgId}
-              onChange={(e) => setOrgId(e.target.value)}
-            />
-          </label>
-
-          <label className="text-[12px] text-foreground/90">
-            Admin Key
-            <div className="relative mt-1">
-              <Input
-                className="pr-10"
-                type={showAdminKey ? "text" : "password"}
-                value={adminKey}
-                onChange={(e) => setAdminKey(e.target.value)}
-              />
-              <button
-                type="button"
-                aria-label={showAdminKey ? "Hide admin key" : "Show admin key"}
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                onClick={() => setShowAdminKey((v) => !v)}
-              >
-                {showAdminKey ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-          </label>
-
-          <label className="text-[12px] text-foreground/90">
-            Agent Token
-            <div className="relative mt-1">
-              <Input
-                className="pr-10"
-                type={showAgentToken ? "text" : "password"}
-                value={agentToken}
-                onChange={(e) => setAgentToken(e.target.value)}
-              />
-              <button
-                type="button"
-                aria-label={
-                  showAgentToken ? "Hide agent token" : "Show agent token"
-                }
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                onClick={() => setShowAgentToken((v) => !v)}
-              >
-                {showAgentToken ? (
-                  <EyeOff className="h-4 w-4" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
-              </button>
-            </div>
-          </label>
-        </div>
-
         <div className="flex items-center gap-2 border-b border-border pb-2">
           <button
             className={`px-3 py-1.5 text-[12px] rounded-sm border ${
@@ -348,55 +368,106 @@ export default function LocalFilesPanel() {
           >
             Add New Tasks
           </button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="ml-auto"
+            onClick={() => setOrgDetailsOpen((v) => !v)}
+          >
+            {orgDetailsOpen ? "Hide org details" : "Show org details"}
+          </Button>
         </div>
 
+        {orgDetailsOpen ? (
+          <div className="grid gap-3 md:grid-cols-2">
+            {orgs.length > 1 ? (
+              <label className="text-[12px] text-foreground/90 md:col-span-2">
+                Select Organisation
+                <select
+                  className="mt-1 h-10 w-full rounded-sm border border-border bg-background px-3 text-sm"
+                  value={selectedOrgId}
+                  onChange={(e) => setSelectedOrgId(e.target.value)}
+                >
+                  {orgs.map((org) => (
+                    <option key={org.id} value={org.id}>
+                      {org.name} ({org.role || "member"})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label className="text-[12px] text-foreground/90 md:col-span-2">
+                Organisation
+                <Input
+                  className="mt-1"
+                  value={
+                    orgs[0]
+                      ? `${orgs[0].name} (${orgs[0].role || "member"})`
+                      : ""
+                  }
+                  readOnly
+                  placeholder={
+                    orgsLoading
+                      ? "Loading organisation..."
+                      : "No organisation linked"
+                  }
+                />
+              </label>
+            )}
+
+            <label className="text-[12px] text-foreground/90">
+              Organisation Name
+              <Input
+                className="mt-1"
+                value={orgName}
+                readOnly
+                placeholder="-"
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Organisation ID
+              <Input
+                className="mt-1"
+                value={orgId}
+                readOnly
+                placeholder="Select an organisation"
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Admin Key
+              <Input
+                className="mt-1"
+                type="password"
+                value={adminKey}
+                readOnly
+                placeholder="No admin key synced from login"
+              />
+            </label>
+
+            <label className="text-[12px] text-foreground/90">
+              Agent Token
+              <Input
+                className="mt-1"
+                type="password"
+                value={agentToken}
+                readOnly
+                placeholder="No agent token synced from login"
+              />
+            </label>
+          </div>
+        ) : null}
+
         {activeTab === "register" ? (
-          <div className="grid gap-3 md:grid-cols-3">
-            <label className="text-[12px] text-foreground/90">
-              Device ID
-              <Input
-                className="mt-1"
-                value={deviceId}
-                onChange={(e) => setDeviceId(e.target.value)}
-              />
-            </label>
-
-            <label className="text-[12px] text-foreground/90">
-              Hostname
-              <Input
-                className="mt-1"
-                value={hostname}
-                onChange={(e) => setHostname(e.target.value)}
-              />
-            </label>
-
-            <label className="text-[12px] text-foreground/90">
-              Agent Version
-              <Input
-                className="mt-1"
-                value={agentVersion}
-                onChange={(e) => setAgentVersion(e.target.value)}
-              />
-            </label>
-
+          <div className="grid gap-3 md:grid-cols-1">
+            <div className="rounded-sm border border-border bg-muted/20 px-3 py-2 text-[12px] text-muted-foreground">
+              Devices register automatically from the installer/agent. Use the
+              pending approvals list below to approve new devices.
+            </div>
             <div className="md:col-span-3 flex flex-wrap gap-2">
-              <Button onClick={handleRegisterDevice} disabled={loading}>
-                Register Device
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={handleApproveDevice}
-                disabled={loading}
-              >
-                Approve Device
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleListDevices}
-                disabled={loading}
-              >
-                List Devices
-              </Button>
+              {/* Device refresh moved to the Registered Devices panel */}
             </div>
           </div>
         ) : (
@@ -407,15 +478,7 @@ export default function LocalFilesPanel() {
                 className="mt-1"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-              />
-            </label>
-
-            <label className="text-[12px] text-foreground/90 md:col-span-2">
-              Target Paths (comma separated)
-              <Input
-                className="mt-1"
-                value={pathsInput}
-                onChange={(e) => setPathsInput(e.target.value)}
+                placeholder="rahul@gmail.com"
               />
             </label>
 
@@ -430,17 +493,73 @@ export default function LocalFilesPanel() {
                 onChange={(e) =>
                   setExpiresInHours(Number(e.target.value || 24))
                 }
+                placeholder="24"
               />
             </label>
 
-            <label className="text-[12px] text-foreground/90">
-              Task Group ID (results)
-              <Input
-                className="mt-1"
-                value={taskGroupId}
-                onChange={(e) => setTaskGroupId(e.target.value)}
-              />
-            </label>
+            <div className="text-[12px] text-foreground/90 md:col-span-2">
+              Target Devices
+              {approvedDevices.length === 0 ? (
+                <div className="mt-1 rounded-sm border border-border bg-muted/30 px-3 py-2 text-[12px] text-muted-foreground">
+                  No approved devices available. Approve devices first.
+                </div>
+              ) : (
+                <div className="mt-1 space-y-2 rounded-sm border border-border bg-muted/20 p-2">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setTaskTargetDeviceIds(
+                          approvedDevices.map((d) => d.device_id),
+                        )
+                      }
+                    >
+                      Select All Approved
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setTaskTargetDeviceIds([])}
+                    >
+                      Clear Selection
+                    </Button>
+                  </div>
+                  <div className="space-y-1 max-h-36 overflow-auto pr-1">
+                    {approvedDevices.map((d) => (
+                      <label
+                        key={`task-target-${d.device_id}`}
+                        className="flex items-center gap-2 rounded-sm px-2 py-1 hover:bg-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={taskTargetDeviceIds.includes(d.device_id)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setTaskTargetDeviceIds((prev) =>
+                              checked
+                                ? [...prev, d.device_id]
+                                : prev.filter((id) => id !== d.device_id),
+                            );
+                          }}
+                        />
+                        <span className="text-foreground">{d.device_id}</span>
+                        <span className="text-muted-foreground">
+                          ({d.hostname || "unknown-host"})
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {taskTargetDeviceIds.length > 0
+                      ? `Selected ${taskTargetDeviceIds.length} device(s)`
+                      : "No devices selected. Task will run on all approved devices."}
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="md:col-span-2 flex flex-wrap gap-2">
               <Button onClick={handleCreateTask} disabled={loading}>
@@ -468,6 +587,34 @@ export default function LocalFilesPanel() {
             {errorText}
           </div>
         ) : null}
+
+        {approvalRequests.length > 0 ? (
+          <div className="rounded-sm border border-warning/40 bg-warning/10 px-3 py-2 text-[12px] text-warning space-y-2">
+            <div className="font-semibold text-foreground">
+              Pending Device Approval Requests: {approvalRequests.length}
+            </div>
+            <div className="space-y-1">
+              {approvalRequests.slice(0, 8).map((request) => (
+                <div
+                  key={`${request.device_id}-${request.updated_at || request.created_at || ""}`}
+                  className="flex items-center justify-between gap-2 rounded-sm border border-warning/30 bg-background/80 px-2 py-1"
+                >
+                  <div className="text-foreground/90">
+                    {request.device_id} ({request.hostname || "unknown-host"})
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={loading}
+                    onClick={() => void handleApproveDevice(request.device_id)}
+                  >
+                    Approve Device
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="bg-card border border-border rounded-sm p-4 space-y-3">
@@ -480,13 +627,8 @@ export default function LocalFilesPanel() {
             size="sm"
             onClick={async () => {
               clearMessages();
-              const res = await listTasks(apiConfig, { limit: 250 });
-              if (!res.ok || !res.data) {
-                setErrorText(`Task details load failed: ${res.error}`);
-                return;
-              }
-              setTaskHistory(res.data.tasks || []);
-              setStatusText(`Loaded ${res.data.tasks?.length || 0} tasks.`);
+              const loaded = await refreshTaskHistory();
+              setStatusText(`Loaded ${loaded.length} tasks.`);
             }}
             disabled={loading}
           >
@@ -515,10 +657,114 @@ export default function LocalFilesPanel() {
             </div>
           </div>
         </div>
+      </div>
 
-        <div className="space-y-2">
-          {taskHistory.length > 0
-            ? taskHistory.map((task) => {
+      {activeTab === "register" ? (
+        <div className="bg-card border border-border rounded-sm p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[12px] font-semibold text-foreground">
+              Registered Devices Updates
+            </h3>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                clearMessages();
+                const loadedDevices = await refreshDevices(true);
+                await refreshApprovalRequests();
+                setStatusText(
+                  `Fetched ${loadedDevices.length} registered devices.`,
+                );
+              }}
+              disabled={loading}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </Button>
+          </div>
+          {isListingDevices ? (
+            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
+              Loading registered devices...
+            </div>
+          ) : devices.length === 0 ? (
+            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
+              No registered devices available.
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-64 overflow-auto pr-1">
+              {devices.map((device) => (
+                <div
+                  key={device.device_id}
+                  className="rounded-sm border border-border bg-muted/20 p-3 text-[12px]"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium text-foreground break-all">
+                      {device.device_id}
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
+                        device.approved
+                          ? "border-primary/30 bg-primary/15 text-primary"
+                          : "border-warning/30 bg-warning/15 text-warning"
+                      }`}
+                    >
+                      {device.approved ? "Approved" : "Pending"}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid gap-1 text-muted-foreground">
+                    <div>
+                      Hostname:{" "}
+                      <span className="text-foreground">
+                        {device.hostname || "-"}
+                      </span>
+                    </div>
+                    <div>
+                      Version:{" "}
+                      <span className="text-foreground">
+                        {device.agent_version || "-"}
+                      </span>
+                    </div>
+                    <div>
+                      Org:{" "}
+                      <span className="text-foreground">
+                        {device.organisation_id || orgId}
+                      </span>
+                    </div>
+                    <div>
+                      Last Seen:{" "}
+                      <span className="text-foreground">
+                        {formatDate(device.last_seen)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-sm p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-[12px] font-semibold text-foreground">
+              Task Updates
+            </h3>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                clearMessages();
+                const loaded = await refreshTaskHistory();
+                setStatusText(`Loaded ${loaded.length} tasks.`);
+              }}
+              disabled={loading}
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Refresh
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {taskHistory.length > 0 ? (
+              taskHistory.map((task) => {
                 const expanded = !!expandedTaskIds[task.id];
                 return (
                   <div
@@ -623,16 +869,16 @@ export default function LocalFilesPanel() {
                             </div>
                           ) : (
                             <div className="max-h-52 overflow-auto rounded-sm border border-border bg-muted/30">
-                              <table className="w-full text-[11px]">
+                              <table className="w-full table-fixed text-[11px]">
                                 <thead className="sticky top-0 bg-muted">
                                   <tr>
-                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                    <th className="w-[20%] text-left px-2 py-1 text-muted-foreground">
                                       Type
                                     </th>
-                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                    <th className="w-[40%] text-left px-2 py-1 text-muted-foreground">
                                       Value
                                     </th>
-                                    <th className="text-left px-2 py-1 text-muted-foreground">
+                                    <th className="w-[40%] text-left px-2 py-1 text-muted-foreground">
                                       File
                                     </th>
                                   </tr>
@@ -643,13 +889,13 @@ export default function LocalFilesPanel() {
                                       key={`${task.id}-m-${idx}`}
                                       className="border-t border-border"
                                     >
-                                      <td className="px-2 py-1 text-foreground">
+                                      <td className="w-[20%] px-2 py-1 text-foreground break-words">
                                         {m.type}
                                       </td>
-                                      <td className="px-2 py-1 text-foreground">
+                                      <td className="w-[40%] px-2 py-1 text-foreground break-words">
                                         {m.value}
                                       </td>
-                                      <td className="px-2 py-1 text-muted-foreground break-all">
+                                      <td className="w-[40%] px-2 py-1 text-muted-foreground break-words">
                                         {m.file}
                                       </td>
                                     </tr>
@@ -664,85 +910,14 @@ export default function LocalFilesPanel() {
                   </div>
                 );
               })
-            : null}
+            ) : (
+              <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
+                No task updates available.
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="bg-card border border-border rounded-sm p-3">
-          <h3 className="mb-2 text-[12px] font-semibold text-foreground">
-            Registered Devices
-          </h3>
-          {isListingDevices ? (
-            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
-              Loading registered devices...
-            </div>
-          ) : devices.length === 0 ? (
-            <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
-              No registered devices available.
-            </div>
-          ) : (
-            <div className="space-y-2 max-h-64 overflow-auto pr-1">
-              {devices.map((device) => (
-                <div
-                  key={device.device_id}
-                  className="rounded-sm border border-border bg-muted/20 p-3 text-[12px]"
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium text-foreground break-all">
-                      {device.device_id}
-                    </div>
-                    <span
-                      className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
-                        device.approved
-                          ? "border-primary/30 bg-primary/15 text-primary"
-                          : "border-warning/30 bg-warning/15 text-warning"
-                      }`}
-                    >
-                      {device.approved ? "Approved" : "Pending"}
-                    </span>
-                  </div>
-                  <div className="mt-2 grid gap-1 text-muted-foreground">
-                    <div>
-                      Hostname:{" "}
-                      <span className="text-foreground">
-                        {device.hostname || "-"}
-                      </span>
-                    </div>
-                    <div>
-                      Version:{" "}
-                      <span className="text-foreground">
-                        {device.agent_version || "-"}
-                      </span>
-                    </div>
-                    <div>
-                      Org:{" "}
-                      <span className="text-foreground">
-                        {device.organisation_id || orgId}
-                      </span>
-                    </div>
-                    <div>
-                      Last Seen:{" "}
-                      <span className="text-foreground">
-                        {formatDate(device.last_seen)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-card border border-border rounded-sm p-3">
-          <h3 className="mb-2 text-[12px] font-semibold text-foreground">
-            Selected Task Group Result
-          </h3>
-          <pre className="max-h-64 overflow-auto rounded-sm border border-border bg-muted p-3 text-[11px] text-foreground">
-            {JSON.stringify(taskResultGroup, null, 2)}
-          </pre>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

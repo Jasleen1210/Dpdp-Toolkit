@@ -36,13 +36,6 @@ func (e *Engine) ScanTask(task types.Task) ([]types.Match, int) {
 	query := strings.TrimSpace(strings.ToLower(task.Query))
 	allMatches, scannedFiles := e.scanRoots(roots, query, task.Query)
 
-	if scannedFiles == 0 && len(task.Paths) > 0 {
-		fallbackRoots := normalizedRoots(e.cfg.ScanPaths)
-		fallbackMatches, fallbackScanned := e.scanRoots(fallbackRoots, query, task.Query)
-		allMatches = append(allMatches, fallbackMatches...)
-		scannedFiles += fallbackScanned
-	}
-
 	return allMatches, scannedFiles
 }
 
