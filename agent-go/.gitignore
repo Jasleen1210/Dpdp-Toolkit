@@ -1,0 +1,14 @@
+.env
+.env.*
+*.env
+
+*.log
+
+/bin/
+/build/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib

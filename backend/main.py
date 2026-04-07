@@ -1,4 +1,6 @@
+from dotenv import load_dotenv
 import os
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 from uuid import uuid4
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +17,7 @@ from backend.services.local.local_db import (
     device_results_collection,
 )
 
+
 app = FastAPI()
 
 ORG_ID = os.getenv("ORG_ID", "dpdp-org")
@@ -23,6 +26,8 @@ ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 APPROVED_DEVICE_IDS = {
     d.strip() for d in os.getenv("APPROVED_DEVICE_IDS", "").split(",") if d.strip()
 }
+
+print("TOKEN:", DEVICE_SHARED_TOKEN)
 
 app.add_middleware(
     CORSMiddleware,
