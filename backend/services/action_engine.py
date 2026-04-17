@@ -1,59 +1,72 @@
-from db import files_collection, logs_collection
+from datetime import datetime
+from backend.services.cloud.mock_s3_service import list_files, read_file
+from backend.services.cloud.db import collection, logs_collection
 
-def find_user_files(identifier):
-    return list(files_collection.find({
-        "pii_values": identifier
-    }))
+
+def find_matching_files(identifier):
+    matches = []
+    files = list_files()
+
+    for path in files:
+        content = read_file(path).lower()
+        if identifier.lower() in content:
+            matches.append(path)
+
+    return matches
+
 
 def delete_data(identifier):
-    files = find_user_files(identifier)
+    files = find_matching_files(identifier)
 
     for f in files:
-        # simulate delete (remove from DB)
-        files_collection.delete_one({"_id": f["_id"]})
+        collection.delete_one({"file": f})
 
     logs_collection.insert_one({
-        "request_type": "DELETE",
-        "user": identifier,
+        "action": "DELETE",
+        "identifier": identifier,
         "files_affected": len(files),
-        "status": "success"
+        "timestamp": datetime.now(),
+        "status": "SUCCESS"
     })
 
     return len(files)
 
 
 def access_data(identifier):
-    files = find_user_files(identifier)
+    files = find_matching_files(identifier)
 
     logs_collection.insert_one({
-        "request_type": "ACCESS",
-        "user": identifier,
+        "action": "ACCESS",
+        "identifier": identifier,
         "files_affected": len(files),
-        "status": "success"
+        "timestamp": datetime.now(),
+        "status": "SUCCESS"
     })
 
     return files
 
 
 def update_data(identifier, new_value):
-    files = find_user_files(identifier)
-
-    for f in files:
-        updated_values = [
-            new_value if v == identifier else v
-            for v in f["pii_values"]
-        ]
-
-        files_collection.update_one(
-            {"_id": f["_id"]},
-            {"$set": {"pii_values": updated_values}}
-        )
+    files = find_matching_files(identifier)
 
     logs_collection.insert_one({
-        "request_type": "UPDATE",
-        "user": identifier,
+        "action": "UPDATE",
+        "identifier": identifier,
         "files_affected": len(files),
-        "status": "success"
+        "timestamp": datetime.now(),
+        "status": "SUCCESS"
     })
 
     return len(files)
+
+
+def process_request(req):
+    identifier = req["identifier"]
+    req_type = req["type"]
+
+    if req_type == "DELETE":
+        return delete_data(identifier)
+    elif req_type == "ACCESS":
+        return len(access_data(identifier))
+    elif req_type == "UPDATE":
+        return update_data(identifier, req.get("new_value"))

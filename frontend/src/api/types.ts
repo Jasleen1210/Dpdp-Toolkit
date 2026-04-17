@@ -29,9 +29,9 @@ export interface DataSource {
 
 export interface DSRRequest {
   id: string;
-  type: "delete" | "access" | "correction";
+  type: "delete" | "access" | "update";
   subject: string;
-  status: "pending" | "in_progress" | "completed" | "rejected";
+  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval";
   created: string;
   sla_remaining: string;
   handler: "auto" | "manual";

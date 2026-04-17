@@ -6,7 +6,8 @@ load_dotenv()
 ATLAS_URL = os.getenv("ATLAS_URL")
 client = MongoClient(ATLAS_URL)
 
-db = client["dpdp_db"]
+db = client["cloud_db"]
 
-collection = db["files"]
-logs_collection = db["logs"]
+collection = db["cloud_classification"]
+requests_collection = db["user_requests"]
+logs_collection = db["cloud_logs"]

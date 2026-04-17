@@ -25,7 +25,7 @@ export default function CloudPanel() {
   try {
     setLoading(true);
 
-    const res = await fetch("http://127.0.0.1:8000/cloud/scan-cloud", {
+    const res = await fetch(`${import.meta.env.VITE_API_URL}/cloud/scan-cloud`, {
       method: "POST",
     });
 

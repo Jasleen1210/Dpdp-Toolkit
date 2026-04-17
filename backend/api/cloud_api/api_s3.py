@@ -3,9 +3,13 @@ from pydantic import BaseModel
 
 from datetime import datetime
 
+from uuid import uuid4
+
 from backend.services.cloud.mock_s3_service import list_files, read_file
-from backend.services.cloud.db import collection, logs_collection
+from backend.services.cloud.db import collection, requests_collection, logs_collection
 from backend.services.detector import detect_pii_full
+
+from backend.services.action_engine import process_request
 
 router = APIRouter(prefix="/cloud")
 
@@ -27,61 +31,41 @@ def get_pii_flags(pii_result):
     return pii_flags
 
 
-# comapany forwards requests from users to us, for now ive added some mock query here seedha 
-requests_db = [
-    {
-        "id": 1,
-        "user": "rahul@gmail.com",
-        "type": "DELETE",
-        "status": "PENDING"
-    }
-]
-
 @router.get("/requests")
 def get_requests():
+    data = list(requests_collection.find({}, {"_id": 0}))
+
     formatted = []
 
-    for r in requests_db:
+    for r in data:
         formatted.append({
-            "id": f"DSR-{r['id']}",
-            "type": r["type"].lower(),  # IMPORTANT
-            "subject": r["user"],
+            "id": r["id"],
+            "type": r["type"].lower(),
+            "subject": r["identifier"],
             "status": r["status"].lower(),
             "sla_remaining": "48h",
             "handler": "auto-system",
-            "created": datetime.now().strftime("%Y-%m-%d")
+            "created": r["created_at"].strftime("%Y-%m-%d")
         })
 
     return {"requests": formatted}
 
-# process request
-@router.post("/dpdp/request")
-async def handle_request(req: dict):
 
-    req_type = req.get("type")
-    identifier = req.get("identifier")
+@router.post("/dpdp/approve/{request_id}")
+async def approve_request(request_id: str):
+    req = requests_collection.find_one({"id": request_id})
 
-    new_req = {
-        "id": len(requests_db) + 1,
-        "user": identifier,
-        "type": req_type,
-        "status": "IN_PROGRESS"
-    }
+    if not req:
+        return {"error": "Not found"}
 
-    requests_db.append(new_req)
+    process_request(req)
 
-    # Process immediately for now
-    if req_type == "DELETE":
-        count = delete_data(identifier)
-    elif req_type == "ACCESS":
-        files = access_data(identifier)
-    elif req_type == "UPDATE":
-        count = update_data(identifier, req.get("new_value"))
+    requests_collection.update_one(
+        {"id": request_id},
+        {"$set": {"status": "COMPLETED"}}
+    )
 
-    new_req["status"] = "COMPLETED"
-
-    return {"message": "Request processed"}
-
+    return {"message": "Approved and executed"}
 
 # Scan entire cloud (mock S3)
 @router.post("/scan-cloud")
@@ -226,4 +210,3 @@ def update_data(identifier, new_value):
 async def get_logs():
     logs = list(logs_collection.find({}, {"_id": 0}))
     return {"logs": logs}
-
