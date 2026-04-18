@@ -139,8 +139,8 @@ export default function RequestsPage() {
   }, []);
 
   const handleApprove = async (id: string) => {
-    await fetch(`${API}/cloud/dpdp/approve/${id}`, {
-      method: "POST",
+    await fetch(`${API}/cloud/requests/${id}/approve`, {
+      method: "POST"
     });
     loadData();
   };

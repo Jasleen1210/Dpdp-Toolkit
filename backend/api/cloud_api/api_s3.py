@@ -50,8 +50,7 @@ def get_requests():
 
     return {"requests": formatted}
 
-
-@router.post("/dpdp/approve/{request_id}")
+@router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: str):
     req = requests_collection.find_one({"id": request_id})
 
@@ -66,6 +65,37 @@ async def approve_request(request_id: str):
     )
 
     return {"message": "Approved and executed"}
+
+# create a request 
+@router.post("/requests")
+async def create_request(req: dict):
+    new_req = {
+        "id": str(uuid4()),
+        "type": req["type"],  # DELETE / ACCESS / UPDATE
+        "identifier": req["identifier"],
+        "status": "PENDING",
+        "created_at": datetime.now(),
+        "requires_approval": req["type"] == "DELETE"
+    }
+
+    requests_collection.insert_one(new_req)
+
+    # Auto process if no approval needed
+    if not new_req["requires_approval"]:
+        process_request(new_req)
+        new_req["status"] = "COMPLETED"
+        requests_collection.update_one(
+            {"id": new_req["id"]},
+            {"$set": {"status": "COMPLETED"}}
+        )
+    else:
+        new_req["status"] = "AWAITING_APPROVAL"
+        requests_collection.update_one(
+            {"id": new_req["id"]},
+            {"$set": {"status": "AWAITING_APPROVAL"}}
+        )
+
+    return {"request": new_req}
 
 # Scan entire cloud (mock S3)
 @router.post("/scan-cloud")
