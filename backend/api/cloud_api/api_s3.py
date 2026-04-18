@@ -30,10 +30,9 @@ def get_pii_flags(pii_result):
 
     return pii_flags
 
-
 @router.get("/requests")
 def get_requests():
-    data = list(requests_collection.find({}, {"_id": 0}))
+    data = list(requests_collection.find({}, {"_id": 0}).sort("created_at", -1))
 
     formatted = []
 
@@ -49,6 +48,39 @@ def get_requests():
         })
 
     return {"requests": formatted}
+
+# create a request 
+@router.post("/requests")
+async def create_request(req: dict):
+    new_req = {
+        "id": str(uuid4()),
+        "type": req["type"],
+        "identifier": req["identifier"],
+        "new_value": req.get("new_value"),
+        "status": "PENDING",
+        "created_at": datetime.now(),
+        "requires_approval": req["type"] == "DELETE"
+    }
+
+    requests_collection.insert_one(new_req)
+
+    new_req.pop("_id", None)
+
+    if not new_req["requires_approval"]:
+        result = process_request(new_req)
+        new_req["status"] = "COMPLETED"
+        requests_collection.update_one(
+            {"id": new_req["id"]},
+            {"$set": {"status": "COMPLETED"}}
+        )
+    else:
+        new_req["status"] = "AWAITING_APPROVAL"
+        requests_collection.update_one(
+            {"id": new_req["id"]},
+            {"$set": {"status": "AWAITING_APPROVAL"}}
+        )
+
+    return {"request": new_req, "result": result }
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: str):
@@ -66,36 +98,6 @@ async def approve_request(request_id: str):
 
     return {"message": "Approved and executed"}
 
-# create a request 
-@router.post("/requests")
-async def create_request(req: dict):
-    new_req = {
-        "id": str(uuid4()),
-        "type": req["type"],  # DELETE / ACCESS / UPDATE
-        "identifier": req["identifier"],
-        "status": "PENDING",
-        "created_at": datetime.now(),
-        "requires_approval": req["type"] == "DELETE"
-    }
-
-    requests_collection.insert_one(new_req)
-
-    # Auto process if no approval needed
-    if not new_req["requires_approval"]:
-        process_request(new_req)
-        new_req["status"] = "COMPLETED"
-        requests_collection.update_one(
-            {"id": new_req["id"]},
-            {"$set": {"status": "COMPLETED"}}
-        )
-    else:
-        new_req["status"] = "AWAITING_APPROVAL"
-        requests_collection.update_one(
-            {"id": new_req["id"]},
-            {"$set": {"status": "AWAITING_APPROVAL"}}
-        )
-
-    return {"request": new_req}
 
 # Scan entire cloud (mock S3)
 @router.post("/scan-cloud")
@@ -116,7 +118,8 @@ async def scan_cloud():
 
         doc = {
             "file": path,
-            "pii": pii_flags
+            "pii": pii_flags,
+            "detected_values": pii_result 
         }
 
         # Store in MongoDB (UPSERT)
@@ -177,63 +180,6 @@ async def search_data(req: SearchRequest):
 @router.get("/")
 async def root():
     return {"status": "Backend running smoothly!"}
-
-# ACTION ENGINE
-def find_matching_files(identifier):
-    matches = []
-
-    files = list_files()
-
-    for path in files:
-        content = read_file(path).lower()
-        if identifier.lower() in content:
-            matches.append(path)
-
-    return matches
-
-
-def delete_data(identifier):
-    files = find_matching_files(identifier)
-
-    # simulate delete (remove from DB only for now)
-    for f in files:
-        collection.delete_one({"file": f})
-
-    logs_collection.insert_one({
-        "request_type": "DELETE",
-        "user": identifier,
-        "files_affected": len(files),
-        "status": "success"
-    })
-
-    return len(files)
-
-
-def access_data(identifier):
-    files = find_matching_files(identifier)
-
-    logs_collection.insert_one({
-        "request_type": "ACCESS",
-        "user": identifier,
-        "files_affected": len(files),
-        "status": "success"
-    })
-
-    return files
-
-
-def update_data(identifier, new_value):
-    files = find_matching_files(identifier)
-
-    # simulate update (just log for now)
-    logs_collection.insert_one({
-        "request_type": "UPDATE",
-        "user": identifier,
-        "files_affected": len(files),
-        "status": "success"
-    })
-
-    return len(files)
 
 # Logs
 @router.get("/logs")

@@ -50,7 +50,7 @@ function RequestTable({
   onApprove: (id: string) => void;
 }) {
   return (
-    <div className="bg-card border border-border rounded-sm sovereign-shadow overflow-x-auto fade-right-mask">
+    <div className="bg-card border border-border rounded-sm sovereign-shadow overflow-x-auto">
       <table className="w-full text-[13px]">
         <thead>
           <tr className="border-b border-border bg-muted/30">
@@ -58,8 +58,6 @@ function RequestTable({
             <th className="px-4 py-2.5">Type</th>
             <th className="px-4 py-2.5">Subject</th>
             <th className="px-4 py-2.5">Status</th>
-            <th className="px-4 py-2.5">SLA</th>
-            <th className="px-4 py-2.5">Handler</th>
             <th className="px-4 py-2.5">Created</th>
             <th className="px-4 py-2.5">Action</th>
           </tr>
@@ -85,9 +83,6 @@ function RequestTable({
                   {r.status.replace("_", " ")}
                 </span>
               </td>
-
-              <td className="px-4 py-2.5">{r.sla_remaining}</td>
-              <td className="px-4 py-2.5">{r.handler}</td>
               <td className="px-4 py-2.5">{r.created}</td>
 
               <td className="px-4 py-2.5">
