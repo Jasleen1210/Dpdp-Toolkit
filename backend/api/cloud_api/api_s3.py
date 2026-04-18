@@ -65,7 +65,7 @@ async def create_request(req: dict):
     requests_collection.insert_one(new_req)
 
     new_req.pop("_id", None)
-
+    result = None
     if not new_req["requires_approval"]:
         result = process_request(new_req)
         new_req["status"] = "COMPLETED"
