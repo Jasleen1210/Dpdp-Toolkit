@@ -12,5 +12,10 @@ venv/
 # Logs
 *.log
 
+# Mock cloud data
+mock_s3/
+mock_azure/
+mock_gcp/
+
 # OS
 .DS_Store

@@ -4,7 +4,6 @@ import { HardDrive, Database, Cloud } from "lucide-react";
 import LocalFilesPanel from "../components/data-access/local/LocalFilesPanel";
 import DatabasePanel from "../components/data-access/database/DatabasePanel";
 import CloudPanel from "../components/data-access/cloud/CloudPanel";
-import RequestPanel from "../components/data-access/cloud/RequestPanel";
 
 type AccessMode = "local" | "db" | "cloud";
 

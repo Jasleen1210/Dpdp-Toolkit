@@ -19,37 +19,48 @@ import React from "react";
 
 export default function CloudPanel() {
   const [loading, setLoading] = React.useState(false);
-  const [cloudData, setCloudData] = React.useState([]);
+  const [cloudData, setCloudData] = React.useState<any[]>([]);
+  const [error, setError] = React.useState<string | null>(null);
   
   const scanCloud = async () => {
   try {
     setLoading(true);
+    setError(null);
 
     const res = await fetch(`${import.meta.env.VITE_API_URL}/cloud/scan-cloud`, {
       method: "POST",
     });
 
-    const data = await res.json();
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : { detail: await res.text() };
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `Cloud scan failed (${res.status})`);
+    }
+
     if (!data.results) {
       console.error("Invalid response:", data);
+      throw new Error("Cloud scan returned an invalid response.");
     }else{
         console.log("SCAN RESPONSE:", data);
       }
     
     const formatted = data.results.map((file: any, index: number) => ({
       id: index,
-      provider: "AWS S3",
-      bucket: file.file,
-      region: "ap-south-1",
+      provider: file.provider,
+      bucket: `${file.bucket}/${file.object_key}`,
+      region: file.region,
       objects: 1,
-      size: "—",
+      // size: `${file.size_bytes} B`,
       scanned: true,
-      pii_found: Object.values(file.pii).filter(Boolean).length,
+      pii_found: file.pii_instance_count ?? 0,
     }));
 
     setCloudData(formatted);
     } catch (err) {
       console.error(err);
+      setError(err instanceof Error ? err.message : "Cloud scan failed.");
     } finally {
       setLoading(false);
     }
@@ -65,10 +76,16 @@ export default function CloudPanel() {
         </div>
         <button
           onClick={scanCloud}
+          disabled={loading}
           className="px-4 py-2 text-[12px] bg-primary text-white rounded-sm"
         >
           {loading ? "Scanning..." : "Scan Cloud"}
         </button>
+        {error && (
+          <div className="mx-4 mb-3 rounded-sm border border-destructive/30 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+            {error}
+          </div>
+        )}
         <table className="w-full text-[13px]">
           <thead>
             <tr className="border-b border-border bg-muted/20">
@@ -85,7 +102,7 @@ export default function CloudPanel() {
                 Objects
               </th>
               <th className="text-right px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
-                Size
+                {/* Size */}
               </th>
               <th className="text-left px-4 py-2 font-medium text-muted-foreground text-[11px] uppercase tracking-wider">
                 Scanned
@@ -103,9 +120,9 @@ export default function CloudPanel() {
                     className={`px-2 py-0.5 text-[11px] font-medium rounded-sm ${
                       c.provider === "AWS S3"
                         ? "bg-warning/10 text-warning"
-                        : c.provider === "Azure Blob"
+                        : c.provider === "Azure Blob Storage"
                           ? "bg-primary/10 text-primary"
-                          : c.provider === "GCP Storage"
+                          : c.provider === "GCP Cloud Storage"
                             ? "bg-destructive/10 text-destructive"
                             : "bg-muted text-muted-foreground"
                     }`}

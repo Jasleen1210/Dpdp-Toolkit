@@ -1,17 +1,1 @@
-import os
-
-BASE_DIR = "backend/mock_s3"
-
-def list_files():
-    files = []
-    for root, _, filenames in os.walk(BASE_DIR):
-        for f in filenames:
-            files.append(os.path.join(root, f))
-    return files
-
-def read_file(path):
-    try:
-        with open(path, "r", errors="ignore") as f:
-            return f.read()
-    except:
-        return ""
+from backend.services.cloud.mock_cloud_service import list_files, read_file

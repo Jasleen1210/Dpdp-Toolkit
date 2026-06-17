@@ -7,3 +7,13 @@ Amount: 5000
 User: Neha
 Credit Card: 5500000000000004
 Amount: 12000
+
+User: Jasleen Sharma
+Email: Jasleen.sharma@company.com
+Credit Card: 4012888888881881
+Amount: 8700
+
+User: Simran Kaur
+Email: simran.kaur@company.com
+Credit Card: 4222222222222
+Amount: 4200
