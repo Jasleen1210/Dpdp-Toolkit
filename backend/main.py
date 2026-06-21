@@ -35,6 +35,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health():
+    """Health check endpoint to wake Render instance on startup."""
+    return {"status": "ok"}
+
 if cloud_router is not None:
     app.include_router(cloud_router)
 

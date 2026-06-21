@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"time"
+	"log"
 
 	"dpdp-toolkit/agent-go/internal/config"
 	"dpdp-toolkit/agent-go/internal/types"
@@ -27,8 +28,36 @@ func New(cfg config.Config) *Client {
 	}
 }
 
+func (c *Client) Health(ctx context.Context) error {
+	u, err := c.makeURL("/health")
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("health check failed: status=%d", resp.StatusCode)
+	}
+	return nil
+}
+
 func (c *Client) Register(ctx context.Context, payload types.DeviceRegistrationRequest) error {
 	return c.postJSON(ctx, c.cfg.RegisterPath, payload, nil)
+}
+
+func (c *Client) Heartbeat(ctx context.Context, deviceID string) error {
+	payload := map[string]string{"device_id": deviceID}
+	return c.postJSON(ctx, "/devices/heartbeat", payload, nil)
 }
 
 func (c *Client) FetchTasks(ctx context.Context, deviceID string) ([]types.Task, error) {
@@ -100,6 +129,57 @@ func (c *Client) SubmitResult(ctx context.Context, payload types.TaskResultPaylo
 	return c.postJSON(ctx, c.cfg.ResultsPath, payload, nil)
 }
 
+func (c *Client) SubmitLatestResult(ctx context.Context, payload types.TaskResultPayload) error {
+	return c.putJSON(ctx, path.Clean(c.cfg.ResultsPath+"/latest"), payload, nil)
+}
+
+func (c *Client) SubmitCronRun(ctx context.Context, payload types.CronRunPayload) (*types.CronRunResponse, error) {
+	var resp types.CronRunResponse
+	
+	// Pass &resp to postJSON so the underlying decoder unmarshals the backend's JSON body
+	err := c.postJSON(ctx, c.cfg.CronRunsPath, payload, &resp)
+	if err != nil {
+		return nil, err
+	}
+	
+	return &resp, nil
+}
+
+func (c *Client) putJSON(ctx context.Context, p string, in any, out any) error {
+	b, err := json.Marshal(in)
+	if err != nil {
+		return err
+	}
+
+	u, err := c.makeURL(p)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	c.applyHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("request failed: path=%s status=%d body=%s", p, resp.StatusCode, string(body))
+	}
+
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
 func (c *Client) postJSON(ctx context.Context, p string, in any, out any) error {
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -151,4 +231,10 @@ func (c *Client) applyHeaders(req *http.Request) {
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
+	log.Printf("debug: authorization=%q org=%q", req.Header.Get("Authorization"), req.Header.Get("X-Org-Id"))
+}
+
+func (c *Client) SubmitVulnerabilities(ctx context.Context, payload types.VulnerabilityReportPayload) error {
+	// Uses the built-in helper method perfectly
+	return c.postJSON(ctx, "/vulnerabilities/report", payload, nil)
 }

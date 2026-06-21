@@ -10,6 +10,9 @@ export type Device = {
   hostname?: string;
   approved?: boolean;
   last_seen?: string;
+  is_active?: boolean;
+  activity_status?: "active" | "inactive" | string;
+  active_window_seconds?: number;
   agent_version?: string;
   organisation_id?: string;
 };
@@ -29,9 +32,10 @@ export type TaskSummary = {
 };
 
 export type CreateTaskRequest = {
-  query: string;
-  device_ids?: string[];
-  expires_in_hours?: number;
+  action_type: "search" | "update" | "delete";
+  target_value: string; // The email, name, or string pattern to look up
+  device_id: string; // The specific targeted system identifier
+  new_value?: string; // Required ONLY when action_type is "update"
 };
 
 export type CreateTaskResponse = {
@@ -105,6 +109,21 @@ export type TaskHistoryItem = {
   matches_count: number;
   pii_types: string[];
   matches: TaskResultMatch[];
+};
+
+export type DeviceDailyScanReportItem = {
+  device_id: string;
+  hostname?: string;
+  approved?: boolean;
+  is_active?: boolean;
+  activity_status?: "active" | "inactive" | string;
+  last_seen?: string;
+  scanned_today: boolean;
+  last_scan_at?: string;
+  status: string;
+  scanned_files: number;
+  matches_count: number;
+  pii_types: string[];
 };
 
 export type OrganisationInfo = {
@@ -352,17 +371,37 @@ export async function listDeviceApprovalRequests(
   );
 }
 
-export async function createTask(
+// export async function createTask(
+//   config: LocalAgentApiConfig,
+//   payload: CreateTaskRequest,
+// ): Promise<ApiResult<CreateTaskResponse>> {
+//   const validationError = validateAuth(config, "admin");
+//   if (validationError) {
+//     return { ok: false, status: 400, data: null, error: validationError };
+//   }
+
+//   return requestJSON<CreateTaskResponse>(
+//     `${normalizeBaseUrl(config.baseUrl)}/tasks`,
+//     {
+//       method: "POST",
+//       headers: jsonHeaders(config, "admin"),
+//       body: JSON.stringify(payload),
+//     },
+//   );
+// }
+
+export async function createRemediationTask(
   config: LocalAgentApiConfig,
   payload: CreateTaskRequest,
-): Promise<ApiResult<CreateTaskResponse>> {
+): Promise<ApiResult<{ status: string; task_id: string }>> {
   const validationError = validateAuth(config, "admin");
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
 
-  return requestJSON<CreateTaskResponse>(
-    `${normalizeBaseUrl(config.baseUrl)}/tasks`,
+  // Routes directly to your unified FastAPI remediation handler
+  return requestJSON<{ status: string; task_id: string }>(
+    `${normalizeBaseUrl(config.baseUrl)}/tasks/remediations`,
     {
       method: "POST",
       headers: jsonHeaders(config, "admin"),
@@ -443,6 +482,30 @@ export async function listTasks(
     method: "GET",
     headers: jsonHeaders(config, "admin"),
   });
+}
+
+export async function listDeviceDailyScanReports(
+  config: LocalAgentApiConfig,
+  date?: string,
+): Promise<ApiResult<{ date: string; reports: DeviceDailyScanReportItem[] }>> {
+  const validationError = validateAuth(config, "admin");
+  if (validationError) {
+    return { ok: false, status: 400, data: null, error: validationError };
+  }
+
+  const query = new URLSearchParams();
+  if (date?.trim()) query.set("date", date.trim());
+
+  const qs = query.toString();
+  const url = `${normalizeBaseUrl(config.baseUrl)}/devices/scan-reports/daily${qs ? `?${qs}` : ""}`;
+
+  return requestJSON<{ date: string; reports: DeviceDailyScanReportItem[] }>(
+    url,
+    {
+      method: "GET",
+      headers: jsonHeaders(config, "admin"),
+    },
+  );
 }
 
 export async function getMyOrganisations(

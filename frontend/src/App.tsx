@@ -27,13 +27,27 @@ import ProfilePage from "@/pages/ProfilePage";
 import NotFound from "@/pages/NotFound";
 import LoginPage from "@/pages/LoginPage";
 import { useAppSelector } from "@/redux/hooks";
+import { useEffect } from "react";
 
 const queryClient = new QueryClient();
+
+// Wake up Render instance on app startup
+function wakeRenderInstance() {
+  const backendUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
+  fetch(`${backendUrl}/health`, { method: "GET" }).catch(() => {
+    // Silently ignore errors - this is just to wake the instance
+  });
+}
 
 function AppRoutes() {
   const { token } = useAppSelector((state) => state.auth);
   const location = useLocation();
   const isLoginRoute = location.pathname === "/login";
+
+  // Wake Render instance on app startup
+  useEffect(() => {
+    wakeRenderInstance();
+  }, []);
 
   if (!token && !isLoginRoute) {
     return <Navigate to="/login" replace />;

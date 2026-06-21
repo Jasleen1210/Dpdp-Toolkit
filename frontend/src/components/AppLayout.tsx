@@ -61,7 +61,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
             <Shield className="w-4 h-4 text-primary-foreground" />
           </div>
           <span className="font-bold text-sm tracking-tight text-foreground">
-            DPDP COMMAND
+            SPARK
           </span>
         </Link>
       </div>

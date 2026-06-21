@@ -1,18 +1,12 @@
 package scanner
 
 import (
-	"archive/zip"
-	"bufio"
-	"bytes"
-	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
-
-	pdf "github.com/ledongthuc/pdf"
+	"time"
+	"runtime"
 
 	"dpdp-toolkit/agent-go/internal/config"
 	"dpdp-toolkit/agent-go/internal/pii"
@@ -23,27 +17,112 @@ type Engine struct {
 	cfg config.Config
 }
 
+const (
+	scanProgressLogEveryFiles = 250
+	scanProgressLogEveryTime  = 10 * time.Second
+)
+
+type scanProgress struct {
+	mode         string
+	start        time.Time
+	lastLogAt    time.Time
+	lastScanned  int
+	lastHitFiles int
+	lastValues   int
+
+	scannedFiles int
+	hitFiles     int
+	valuesFound  int
+}
+
+func newScanProgress(mode string, roots []string) *scanProgress {
+	now := time.Now()
+	p := &scanProgress{mode: mode, start: now, lastLogAt: now}
+	log.Printf("%s scan started: roots=%d", mode, len(roots))
+	return p
+}
+
+func (p *scanProgress) addScannedFile() {
+	p.scannedFiles++
+	p.maybeLog(false)
+}
+
+func (p *scanProgress) addHit(valuesInFile int) {
+	p.hitFiles++
+	p.valuesFound += valuesInFile
+	p.maybeLog(false)
+}
+
+func (p *scanProgress) maybeLog(force bool) {
+	if !force {
+		if p.scannedFiles-p.lastScanned < scanProgressLogEveryFiles && time.Since(p.lastLogAt) < scanProgressLogEveryTime {
+			return
+		}
+	}
+	elapsed := time.Since(p.start).Round(time.Second)
+	log.Printf(
+		"%s scan progress: scanned_files=%d files_with_values=%d values_found=%d elapsed=%s",
+		p.mode,
+		p.scannedFiles,
+		p.hitFiles,
+		p.valuesFound,
+		elapsed,
+	)
+	p.lastScanned = p.scannedFiles
+	p.lastHitFiles = p.hitFiles
+	p.lastValues = p.valuesFound
+	p.lastLogAt = time.Now()
+}
+
+func (p *scanProgress) finish() {
+	p.maybeLog(true)
+}
+
 func New(cfg config.Config) *Engine {
 	return &Engine{cfg: cfg}
 }
 
 func (e *Engine) ScanTask(task types.Task) ([]types.Match, int) {
+	// Default to using global configured paths from configuration file
 	roots := normalizedRoots(e.cfg.ScanPaths)
-	if len(task.Paths) > 0 {
-		roots = normalizedRoots(task.Paths)
+
+	// If this is a standard "access" discovery task, check if the Query field contains a target directory override
+	if task.Type == "access" && strings.TrimSpace(task.Query) != "" {
+		// If query contains characters that aren't paths, fallback safely to default config paths
+		if !strings.Contains(task.Query, "::") && (strings.Contains(task.Query, "/") || strings.Contains(task.Query, "\\")) {
+			roots = normalizedRoots([]string{task.Query})
+		}
+	}
+
+	// If this is an update/delete task, extract the file path target out of the packed query parameters
+	if task.Type == "update" || task.Type == "delete" {
+		parts := strings.Split(task.Query, "::")
+		if len(parts) > 0 && parts[0] != "" {
+			roots = normalizedRoots([]string{parts[0]})
+		}
 	}
 
 	query := strings.TrimSpace(strings.ToLower(task.Query))
-	allMatches, scannedFiles := e.scanRoots(roots, query, task.Query)
+	allMatches, scannedFiles := e.scanRootsForQuery(roots, query, task.Query)
 
 	return allMatches, scannedFiles
 }
 
-func (e *Engine) scanRoots(roots []string, query string, originalQuery string) ([]types.Match, int) {
+func (e *Engine) ScanPII(modifiedSince time.Time) ([]types.Match, int) {
+	roots := normalizedRoots(e.cfg.ScanPaths)
+	allMatches, scannedFiles := e.scanRootsForPII(roots, modifiedSince)
+
+	return allMatches, scannedFiles
+}
+
+func (e *Engine) scanRootsForQuery(roots []string, query string, originalQuery string) ([]types.Match, int) {
 	allMatches := make([]types.Match, 0)
 	scannedFiles := 0
+	progress := newScanProgress("task", roots)
+	hitFiles := map[string]struct{}{}
 
-	for _, root := range roots {
+	for idx, root := range roots {
+		log.Printf("task scan root start: root=%s (%d/%d)", root, idx+1, len(roots))
 		walkErr := filepath.WalkDir(root, func(filePath string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
@@ -55,12 +134,14 @@ func (e *Engine) scanRoots(roots []string, query string, originalQuery string) (
 				return nil
 			}
 
+			log.Printf("DEBUG: Checking file extension for path: %s", filePath) // <-- Add this
 			if !e.isAllowedExtension(filePath) {
+				log.Printf("DEBUG: File skipped because extension is not allowed: %s", filePath) // <-- Add this
 				return nil
 			}
 
-			// Count file candidates even when extraction fails.
 			scannedFiles++
+			progress.addScannedFile()
 
 			content, ok := extractText(filePath, e.cfg.MaxFileSizeMB*1024*1024)
 			if !ok {
@@ -73,6 +154,15 @@ func (e *Engine) scanRoots(roots []string, query string, originalQuery string) (
 
 			if !queryHit && len(piiHits) == 0 {
 				return nil
+			}
+
+			if _, seen := hitFiles[filePath]; !seen {
+				hitFiles[filePath] = struct{}{}
+				valuesInFile := len(piiHits)
+				if valuesInFile == 0 && queryHit {
+					valuesInFile = 1
+				}
+				progress.addHit(valuesInFile)
 			}
 
 			for _, p := range piiHits {
@@ -97,8 +187,93 @@ func (e *Engine) scanRoots(roots []string, query string, originalQuery string) (
 		if walkErr != nil {
 			log.Printf("scan root skipped: root=%s error=%v", root, walkErr)
 		}
+		log.Printf("task scan root complete: root=%s scanned_files=%d files_with_values=%d", root, scannedFiles, len(hitFiles))
 	}
 
+	progress.finish()
+	return allMatches, scannedFiles
+}
+
+func (e *Engine) scanRootsForPII(roots []string, modifiedSince time.Time) ([]types.Match, int) {
+	allMatches := make([]types.Match, 0)
+	scannedFiles := 0
+	progress := newScanProgress("standalone", roots)
+	hitFiles := map[string]struct{}{}
+
+	for idx, root := range roots {
+		log.Printf("standalone scan root start: root=%s (%d/%d)", root, idx+1, len(roots))
+		walkErr := filepath.WalkDir(root, func(filePath string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				if shouldSkipDir(d.Name()) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if !e.isAllowedExtension(filePath) {
+				return nil
+			}
+
+			if !modifiedSince.IsZero() {
+				info, err := d.Info()
+				if err != nil {
+					return nil
+				}
+				if info.ModTime().Before(modifiedSince) {
+					return nil
+				}
+			}
+
+			scannedFiles++
+			progress.addScannedFile()
+
+			// Find this block inside scanRootsForPII in internal/scanner/scanner.go:
+
+			content, ok := extractText(filePath, e.cfg.MaxFileSizeMB*1024*1024)
+			if !ok {
+				log.Printf("DEBUG SCANNER: extractText failed for %s", filePath) // Add this line
+				return nil
+			}
+
+			// ADD THIS TEMPORARY DEBUG BLOCK HERE:
+			if len(content) > 100 {
+				log.Printf("DEBUG SCANNER: Read file %s successfully. First 60 chars: %q", filePath, content[:60])
+			} else {
+				log.Printf("DEBUG SCANNER: Read file %s successfully. Full content: %q", filePath, content)
+			}
+
+			piiHits := pii.Detect(content, 10)
+
+			if len(piiHits) == 0 {
+				return nil
+			}
+
+			if _, seen := hitFiles[filePath]; !seen {
+				hitFiles[filePath] = struct{}{}
+				progress.addHit(len(piiHits))
+			}
+
+			for _, p := range piiHits {
+				allMatches = append(allMatches, types.Match{
+					Type:  p.Type,
+					Value: p.Value,
+					File:  filePath,
+				})
+			}
+
+			return nil
+		})
+
+		if walkErr != nil {
+			log.Printf("scan root skipped: root=%s error=%v", root, walkErr)
+		}
+		log.Printf("standalone scan root complete: root=%s scanned_files=%d files_with_values=%d", root, scannedFiles, len(hitFiles))
+	}
+
+	progress.finish()
 	return allMatches, scannedFiles
 }
 
@@ -126,198 +301,43 @@ func (e *Engine) isAllowedExtension(filePath string) bool {
 	if _, all := e.cfg.IncludeExts["*"]; all {
 		return true
 	}
-	ext := strings.ToLower(filepath.Ext(filePath))
-	_, ok := e.cfg.IncludeExts[ext]
+	
+	// e.g., "d:\mock_s3\data.txt" -> ".txt"
+	extWithDot := strings.ToLower(filepath.Ext(filePath))
+	
+	// 1. Try matching with the dot (e.g., ".txt")
+	if _, ok := e.cfg.IncludeExts[extWithDot]; ok {
+		return true
+	}
+	
+	// 2. Try matching without the dot (e.g., "txt")
+	extWithoutDot := strings.TrimPrefix(extWithDot, ".")
+	_, ok := e.cfg.IncludeExts[extWithoutDot]
 	return ok
 }
 
 func shouldSkipDir(name string) bool {
 	n := strings.ToLower(name)
+	// Dirs to skip on all platforms
 	switch n {
-	case ".git", "node_modules", "appdata", "$recycle.bin", "windows", "program files", "program files (x86)":
-		return true
-	default:
-		return false
-	}
-}
-
-func readLimitedText(filePath string, maxBytes int64) (string, bool) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", false
-	}
-	defer f.Close()
-
-	reader := bufio.NewReader(io.LimitReader(f, maxBytes+1))
-	b, err := io.ReadAll(reader)
-	if err != nil {
-		return "", false
-	}
-	if int64(len(b)) > maxBytes {
-		return "", false
-	}
-
-	if !isLikelyText(b) {
-		return "", false
-	}
-
-	return string(b), true
-}
-
-func extractText(filePath string, maxBytes int64) (string, bool) {
-	ext := strings.ToLower(filepath.Ext(filePath))
-
-	switch ext {
-	case ".pdf":
-		if text, ok := readPDFText(filePath, maxBytes); ok {
-			return text, true
-		}
-	case ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp":
-		if text, ok := readZipXMLText(filePath, maxBytes); ok {
-			return text, true
-		}
-	}
-
-	if text, ok := readLimitedText(filePath, maxBytes); ok {
-		return text, true
-	}
-
-	if text, ok := readPrintableStrings(filePath, maxBytes); ok {
-		return text, true
-	}
-
-	return "", false
-}
-
-func readPDFText(filePath string, maxBytes int64) (string, bool) {
-	f, reader, err := pdf.Open(filePath)
-	if err != nil {
-		return "", false
-	}
-	defer f.Close()
-
-	plain, err := reader.GetPlainText()
-	if err != nil {
-		return "", false
-	}
-
-	b, err := io.ReadAll(io.LimitReader(plain, maxBytes+1))
-	if err != nil || int64(len(b)) > maxBytes {
-		return "", false
-	}
-
-	text := strings.TrimSpace(string(b))
-	if text == "" {
-		return "", false
-	}
-	return text, true
-}
-
-func readZipXMLText(filePath string, maxBytes int64) (string, bool) {
-	zr, err := zip.OpenReader(filePath)
-	if err != nil {
-		return "", false
-	}
-	defer zr.Close()
-
-	var out strings.Builder
-	tagRe := regexp.MustCompile(`<[^>]+>`)
-	written := int64(0)
-
-	for _, f := range zr.File {
-		name := strings.ToLower(f.Name)
-		if !strings.HasSuffix(name, ".xml") {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			continue
-		}
-		data, err := io.ReadAll(io.LimitReader(rc, maxBytes+1))
-		rc.Close()
-		if err != nil {
-			continue
-		}
-
-		plain := tagRe.ReplaceAllString(string(data), " ")
-		plain = strings.Join(strings.Fields(plain), " ")
-		if plain == "" {
-			continue
-		}
-
-		chunk := fmt.Sprintf("\n[%s]\n%s\n", f.Name, plain)
-		if written+int64(len(chunk)) > maxBytes {
-			break
-		}
-		out.WriteString(chunk)
-		written += int64(len(chunk))
-	}
-
-	final := strings.TrimSpace(out.String())
-	if final == "" {
-		return "", false
-	}
-	return final, true
-}
-
-func readPrintableStrings(filePath string, maxBytes int64) (string, bool) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", false
-	}
-	defer f.Close()
-
-	b, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil || int64(len(b)) > maxBytes {
-		return "", false
-	}
-
-	var out strings.Builder
-	seq := bytes.Buffer{}
-
-	flush := func() {
-		if seq.Len() >= 4 {
-			if out.Len() > 0 {
-				out.WriteByte('\n')
-			}
-			out.WriteString(seq.String())
-		}
-		seq.Reset()
-	}
-
-	for _, c := range b {
-		if isPrintableASCII(c) {
-			seq.WriteByte(c)
-		} else {
-			flush()
-		}
-	}
-	flush()
-
-	text := strings.TrimSpace(out.String())
-	if text == "" {
-		return "", false
-	}
-	return text, true
-}
-
-func isPrintableASCII(c byte) bool {
-	return c == 9 || c == 10 || c == 13 || (c >= 32 && c <= 126)
-}
-
-func isLikelyText(b []byte) bool {
-	if len(b) == 0 {
+	case ".git", "node_modules":
 		return true
 	}
-	nonPrintable := 0
-	for _, c := range b {
-		if c == 0 {
-			return false
-		}
-		if c < 9 || (c > 13 && c < 32) {
-			nonPrintable++
+	// Windows-only dirs
+	if runtime.GOOS == "windows" {
+		switch n {
+		case "appdata", "$recycle.bin", "windows",
+			"program files", "program files (x86)":
+			return true
 		}
 	}
-	ratio := float64(nonPrintable) / float64(len(b))
-	return ratio < 0.05
+	// macOS-only dirs
+	if runtime.GOOS == "darwin" {
+		switch n {
+		case "library", ".trash", "system", "private",
+			"volumes", "cores", "dev":
+			return true
+		}
+	}
+	return false
 }

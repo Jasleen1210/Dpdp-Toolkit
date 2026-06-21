@@ -2,13 +2,16 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ChevronDown, RefreshCw } from "lucide-react";
 import {
   approveDevice,
-  createTask,
+  createRemediationTask,
+  CreateTaskRequest,
+  listDeviceDailyScanReports,
   getMyOrganisations,
   getTaskGroupResults,
   listDeviceApprovalRequests,
   listOrganisationDevices,
   listTasks,
   type Device,
+  type DeviceDailyScanReportItem,
   type DeviceApprovalRequestItem,
   type OrganisationInfo,
   type TaskGroupResultResponse,
@@ -64,6 +67,10 @@ export default function LocalFilesPanel() {
 
   const [latestTaskGroupId, setLatestTaskGroupId] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
+  const [dailyReportDate, setDailyReportDate] = useState("");
+  const [dailyReportByDevice, setDailyReportByDevice] = useState<
+    Record<string, DeviceDailyScanReportItem>
+  >({});
   const [approvalRequests, setApprovalRequests] = useState<
     DeviceApprovalRequestItem[]
   >([]);
@@ -79,6 +86,11 @@ export default function LocalFilesPanel() {
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
   const [isListingDevices, setIsListingDevices] = useState(false);
+
+  const [actionType, setActionType] = useState<"search" | "update" | "delete">(
+    "search",
+  );
+  const [newValue, setNewValue] = useState<string>("");
 
   const normalizedBaseUrl = useMemo(
     () => baseUrl.replace(/\/$/, ""),
@@ -209,6 +221,21 @@ export default function LocalFilesPanel() {
     setApprovalRequests(res.data.requests || []);
   };
 
+  const refreshDailyScanReports = async (): Promise<void> => {
+    const res = await listDeviceDailyScanReports(apiConfig);
+    if (!res.ok || !res.data) {
+      return;
+    }
+
+    setDailyReportDate(res.data.date || "");
+    const reportMap: Record<string, DeviceDailyScanReportItem> = {};
+    for (const report of res.data.reports || []) {
+      if (!report?.device_id) continue;
+      reportMap[report.device_id] = report;
+    }
+    setDailyReportByDevice(reportMap);
+  };
+
   const refreshTaskHistory = async (): Promise<TaskHistoryItem[]> => {
     const res = await listTasks(apiConfig, { limit: 250 });
     if (!res.ok || !res.data) {
@@ -230,6 +257,7 @@ export default function LocalFilesPanel() {
       setErrorText("");
       await refreshDevices(false);
       await refreshApprovalRequests();
+      await refreshDailyScanReports();
       await refreshTaskHistory();
     };
 
@@ -286,27 +314,46 @@ export default function LocalFilesPanel() {
 
     setLoading(true);
 
-    const payload = {
-      query,
-      expires_in_hours: expiresInHours,
-      device_ids: targetDeviceIds,
-    };
+    // Keep track of successful creations and any errors
+    let successfulCount = 0;
+    const errors: string[] = [];
 
-    const res = await createTask(apiConfig, payload);
+    // Loop through each device and create an individual task
+    for (const deviceId of targetDeviceIds) {
+      // Construct the exact shape matching your CreateTaskRequest type
+      const payload: CreateTaskRequest = {
+        action_type: "search", // Fallback to your default action type
+        target_value: query, // Maps to your frontend 'query' variable
+        device_id: deviceId,
+      };
 
-    if (!res.ok || !res.data) {
-      setLoading(false);
-      setErrorText(`Create task failed: ${res.error}`);
-      return;
+      const res = await createRemediationTask(apiConfig, payload);
+
+      if (res.ok && res.data) {
+        successfulCount++;
+        // Since your endpoint returns individual task items, we track the singular task_id
+        // if you have a state variable for it (e.g., setLatestTaskId(res.data.task_id))
+      } else {
+        errors.push(`${deviceId}: ${res.error || "Unknown error"}`);
+      }
     }
 
-    setLatestTaskGroupId(res.data.task_group_id);
+    // Refresh the UI task list after running all requests
     await refreshTaskHistory();
-
     setLoading(false);
-    setStatusText(
-      `Task group created: ${res.data.task_group_id} (${res.data.tasks_created} tasks across ${targetDeviceIds.length} device(s))`,
-    );
+
+    // Handle reporting status to the user
+    if (errors.length > 0) {
+      setErrorText(
+        `Failed to create tasks on some systems:\n${errors.join("\n")}`,
+      );
+    }
+
+    if (successfulCount > 0) {
+      setStatusText(
+        `Tasks deployed successfully: Created ${successfulCount} task(s) across ${targetDeviceIds.length} device(s).`,
+      );
+    }
   };
 
   const handleFetchTaskResults = async () => {
@@ -472,17 +519,61 @@ export default function LocalFilesPanel() {
           </div>
         ) : (
           <div className="grid gap-3 md:grid-cols-2">
+            {/* Action Type Radio Selector */}
+            <div className="text-[12px] text-foreground/90 md:col-span-2">
+              <span className="block mb-1.5 font-medium">Action Type</span>
+              <div className="flex gap-4 items-center bg-muted/20 p-2 rounded-sm border border-border">
+                {(["search", "update", "delete"] as const).map((type) => (
+                  <label
+                    key={type}
+                    className="flex items-center gap-2 capitalize cursor-pointer"
+                  >
+                    <input
+                      type="radio"
+                      name="actionType"
+                      value={type}
+                      checked={actionType === type}
+                      onChange={(e) => setActionType(e.target.value as any)}
+                      className="accent-primary h-3.5 w-3.5"
+                    />
+                    <span className="text-foreground">{type}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            {/* Dynamic Input (Search Query or Old PII) */}
             <label className="text-[12px] text-foreground/90 md:col-span-2">
-              Search Query
+              {actionType === "search"
+                ? "Search Query"
+                : "Target Value (Old PII)"}
               <Input
                 className="mt-1"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="rahul@gmail.com"
+                placeholder={
+                  actionType === "search"
+                    ? "rahul@gmail.com"
+                    : "old-value@domain.com"
+                }
               />
             </label>
 
-            <label className="text-[12px] text-foreground/90">
+            {/* Conditional New Value Input (Visible ONLY on Update) */}
+            {actionType === "update" && (
+              <label className="text-[12px] text-foreground/90 md:col-span-2">
+                New Value (New PII)
+                <Input
+                  className="mt-1"
+                  value={newValue}
+                  onChange={(e) => setNewValue(e.target.value)}
+                  placeholder="new-value@domain.com"
+                />
+              </label>
+            )}
+
+            {/* Expires In Config */}
+            <label className="text-[12px] text-foreground/90 md:col-span-2">
               Expires In Hours (max 24)
               <Input
                 className="mt-1"
@@ -497,6 +588,7 @@ export default function LocalFilesPanel() {
               />
             </label>
 
+            {/* Target Devices Selection Block */}
             <div className="text-[12px] text-foreground/90 md:col-span-2">
               Target Devices
               {approvedDevices.length === 0 ? (
@@ -531,7 +623,7 @@ export default function LocalFilesPanel() {
                     {approvedDevices.map((d) => (
                       <label
                         key={`task-target-${d.device_id}`}
-                        className="flex items-center gap-2 rounded-sm px-2 py-1 hover:bg-muted"
+                        className="flex items-center gap-2 rounded-sm px-2 py-1 hover:bg-muted cursor-pointer"
                       >
                         <input
                           type="checkbox"
@@ -561,6 +653,7 @@ export default function LocalFilesPanel() {
               )}
             </div>
 
+            {/* Action Buttons */}
             <div className="md:col-span-2 flex flex-wrap gap-2">
               <Button onClick={handleCreateTask} disabled={loading}>
                 Create Task
@@ -672,6 +765,7 @@ export default function LocalFilesPanel() {
                 clearMessages();
                 const loadedDevices = await refreshDevices(true);
                 await refreshApprovalRequests();
+                await refreshDailyScanReports();
                 setStatusText(
                   `Fetched ${loadedDevices.length} registered devices.`,
                 );
@@ -697,46 +791,121 @@ export default function LocalFilesPanel() {
                   key={device.device_id}
                   className="rounded-sm border border-border bg-muted/20 p-3 text-[12px]"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium text-foreground break-all">
-                      {device.device_id}
-                    </div>
-                    <span
-                      className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
-                        device.approved
-                          ? "border-primary/30 bg-primary/15 text-primary"
-                          : "border-warning/30 bg-warning/15 text-warning"
-                      }`}
-                    >
-                      {device.approved ? "Approved" : "Pending"}
-                    </span>
-                  </div>
-                  <div className="mt-2 grid gap-1 text-muted-foreground">
-                    <div>
-                      Hostname:{" "}
-                      <span className="text-foreground">
-                        {device.hostname || "-"}
-                      </span>
-                    </div>
-                    <div>
-                      Version:{" "}
-                      <span className="text-foreground">
-                        {device.agent_version || "-"}
-                      </span>
-                    </div>
-                    <div>
-                      Org:{" "}
-                      <span className="text-foreground">
-                        {device.organisation_id || orgId}
-                      </span>
-                    </div>
-                    <div>
-                      Last Seen:{" "}
-                      <span className="text-foreground">
-                        {formatDate(device.last_seen)}
-                      </span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const report = dailyReportByDevice[device.device_id];
+                    const scannedToday = !!report?.scanned_today;
+                    const deviceActive =
+                      typeof device.is_active === "boolean"
+                        ? device.is_active
+                        : (report?.is_active ?? false);
+                    return (
+                      <>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-medium text-foreground break-all">
+                            {device.device_id}
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span
+                              className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
+                                deviceActive
+                                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
+                                  : "border-muted-foreground/30 bg-muted text-muted-foreground"
+                              }`}
+                            >
+                              {deviceActive ? "Active" : "Inactive"}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
+                                device.approved
+                                  ? "border-primary/30 bg-primary/15 text-primary"
+                                  : "border-warning/30 bg-warning/15 text-warning"
+                              }`}
+                            >
+                              {device.approved ? "Approved" : "Pending"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="mt-2 grid gap-1 text-muted-foreground">
+                          <div>
+                            Hostname:{" "}
+                            <span className="text-foreground">
+                              {device.hostname || "-"}
+                            </span>
+                          </div>
+                          <div>
+                            Version:{" "}
+                            <span className="text-foreground">
+                              {device.agent_version || "-"}
+                            </span>
+                          </div>
+                          <div>
+                            Activity Window:{" "}
+                            <span className="text-foreground">
+                              {device.active_window_seconds || 180}s
+                            </span>
+                          </div>
+                          <div>
+                            Org:{" "}
+                            <span className="text-foreground">
+                              {device.organisation_id || orgId}
+                            </span>
+                          </div>
+                          <div>
+                            Last Seen:{" "}
+                            <span className="text-foreground">
+                              {formatDate(device.last_seen)}
+                            </span>
+                          </div>
+                          <div className="mt-2 rounded-sm border border-border bg-background/70 px-2 py-2 space-y-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                                Daily Scan Report{" "}
+                                {dailyReportDate ? `(${dailyReportDate})` : ""}
+                              </div>
+                              <span
+                                className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
+                                  scannedToday
+                                    ? "border-primary/30 bg-primary/15 text-primary"
+                                    : "border-muted-foreground/30 bg-muted text-muted-foreground"
+                                }`}
+                              >
+                                {scannedToday ? "Scanned Today" : "Not Scanned"}
+                              </span>
+                            </div>
+                            <div>
+                              Last Daily Scan:{" "}
+                              <span className="text-foreground">
+                                {formatDate(report?.last_scan_at)}
+                              </span>
+                            </div>
+                            <div>
+                              Scanned Files:{" "}
+                              <span className="text-foreground">
+                                {report?.scanned_files ?? 0}
+                              </span>
+                              {" | "}
+                              Matches:{" "}
+                              <span className="text-foreground">
+                                {report?.matches_count ?? 0}
+                              </span>
+                            </div>
+                            {report?.pii_types?.length ? (
+                              <div className="flex flex-wrap gap-1 pt-1">
+                                {report.pii_types.map((t) => (
+                                  <span
+                                    key={`${device.device_id}-daily-${t}`}
+                                    className="px-2 py-0.5 text-[10px] bg-primary/15 text-primary border border-primary/30 rounded-sm"
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>

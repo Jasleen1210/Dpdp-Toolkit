@@ -5,10 +5,9 @@ A lightweight desktop agent for organization-managed laptops/desktops.
 It supports:
 
 - device registration with backend
-- polling for search tasks
+- standalone 24-hour PII scans of selected directories
 - local file scanning within allowed directories
 - regex-based PII detection
-- result upload back to backend
 
 ## Why this stack now
 
@@ -29,11 +28,9 @@ Since your current platform already has React + Python backend, this agent exten
 
 ## Expected backend APIs
 
-The agent expects these endpoints by default (all configurable):
+The agent registers with the backend by default (all configurable):
 
 1. `POST /devices/register`
-2. `GET /devices/tasks?device_id=<id>`
-3. `POST /results`
 
 ### Suggested contracts
 
@@ -47,51 +44,13 @@ The agent expects these endpoints by default (all configurable):
 }
 ```
 
-`GET /devices/tasks?device_id=HOST-123`
-
-Supported response formats:
-
-```json
-[
-  {
-    "id": "task-1",
-    "query": "invoice_2024",
-    "expires_at": "2026-04-07T12:00:00Z",
-    "paths": ["C:/Users/Public/Documents"]
-  }
-]
-```
-
-or
+Optional registration payload stays the same. The agent now scans local files on its own schedule and logs any detected PII matches.
 
 ```json
 {
-  "tasks": [
-    {
-      "id": "task-1",
-      "query": "invoice_2024",
-      "expires_at": "2026-04-07T12:00:00Z",
-      "paths": ["C:/Users/Public/Documents"]
-    }
-  ]
-}
-```
-
-`POST /results`
-
-```json
-{
-  "task_id": "task-1",
   "device_id": "HOST-123",
-  "status": "completed",
-  "scanned_files": 120,
-  "matches": [
-    {
-      "type": "EMAIL",
-      "value": "ra***@example.com",
-      "file": "C:/Users/Public/Documents/customers.txt"
-    }
-  ]
+  "hostname": "HOST-123",
+  "agent_version": "0.1.0"
 }
 ```
 
@@ -101,7 +60,8 @@ Set environment variables (see `.env.example`):
 
 - `SERVER_URL` default: `http://localhost:8000`
 - `API_KEY` default: empty (optional)
-- `POLL_INTERVAL` default: `5m`
+- `POLL_INTERVAL` default: `30s`
+- `SCAN_INTERVAL` default: `24h`
 - `ORG_ID` default: `dpdp-org`
 - `DEVICE_ID` default: machine hostname
 - `SCAN_PATHS` default:
@@ -110,8 +70,6 @@ Set environment variables (see `.env.example`):
   - `*` (scan all file extensions)
 - `MAX_FILE_SIZE_MB` default: `5`
 - `REGISTER_PATH` default: `/devices/register`
-- `TASKS_PATH` default: `/devices/tasks`
-- `RESULTS_PATH` default: `/results`
 
 ## Run
 
@@ -149,7 +107,6 @@ Note: binary-heavy formats may produce noisy text; results should be treated as 
 
 ## Next step for your current system
 
-1. Add the 3 backend endpoints above in your Python service.
-2. Start with polling mode (already implemented here).
-3. Keep task `expires_at` within 24 hours and reject stale results server-side.
-4. When scale grows, migrate distribution from polling to MQTT/WebSockets.
+1. Add the device registration endpoint in your Python service if you want inventory tracking.
+2. Restrict `SCAN_PATHS` to approved folders before deploying on endpoints.
+3. If you later want central tasking, you can layer that back on without changing the scanner itself.

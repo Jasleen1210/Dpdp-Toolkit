@@ -21,6 +21,7 @@ type Config struct {
 	APIKey         string
 	OrgID          string
 	PollInterval   time.Duration
+	ScanInterval   time.Duration
 	DeviceID       string
 	ScanPaths      []string
 	IncludeExts    map[string]struct{}
@@ -28,12 +29,15 @@ type Config struct {
 	RegisterPath   string
 	TasksPath      string
 	ResultsPath    string
+	CronRunsPath          string
+FindingsCheckInterval time.Duration
 }
 
 func Load() Config {
 	_ = godotenv.Load()
 
-	poll := mustParseDuration(firstNonEmpty(os.Getenv("POLL_INTERVAL"), "30s"))
+	pollInterval := mustParseDuration(firstNonEmpty(os.Getenv("POLL_INTERVAL"), "30s"))
+	scanInterval := mustParseDuration(firstNonEmpty(os.Getenv("SCAN_INTERVAL"), "24h"))
 	scanPaths := splitCSV(firstNonEmpty(os.Getenv("SCAN_PATHS"), strings.Join(defaultScanPaths(), ",")))
 	if len(scanPaths) == 0 {
 		scanPaths = defaultScanPaths()
@@ -48,7 +52,8 @@ func Load() Config {
 		ServerURL:     strings.TrimRight(firstNonEmpty(BuiltServerURL, os.Getenv("SERVER_URL"), "http://127.0.0.1:8000"), "/"),
 		APIKey:        firstNonEmpty(BuiltAPIKey, os.Getenv("API_KEY")),
 		OrgID:         firstNonEmpty(BuiltOrgID, os.Getenv("ORG_ID")),
-		PollInterval:  poll,
+		PollInterval:  pollInterval,
+		ScanInterval:  scanInterval,
 		DeviceID:      firstNonEmpty(os.Getenv("DEVICE_ID"), ""),
 		ScanPaths:     scanPaths,
 		IncludeExts:   normalizeExtMap(exts),
@@ -56,6 +61,8 @@ func Load() Config {
 		RegisterPath:  normalizePath(firstNonEmpty(os.Getenv("REGISTER_PATH"), "/devices/register")),
 		TasksPath:     normalizePath(firstNonEmpty(os.Getenv("TASKS_PATH"), "/devices/tasks")),
 		ResultsPath:   normalizePath(firstNonEmpty(os.Getenv("RESULTS_PATH"), "/results")),
+		CronRunsPath:          normalizePath(firstNonEmpty(os.Getenv("CRON_RUNS_PATH"), "/devices/cron-runs")),
+FindingsCheckInterval: mustParseDuration(firstNonEmpty(os.Getenv("FINDINGS_CHECK_INTERVAL"), "1h")),
 	}
 }
 
@@ -100,7 +107,8 @@ func normalizeExtMap(exts []string) map[string]struct{} {
 }
 
 func defaultScanPaths() []string {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		paths := make([]string, 0, 4)
 		for drive := 'C'; drive <= 'Z'; drive++ {
 			root := string(drive) + ":\\"
@@ -111,14 +119,27 @@ func defaultScanPaths() []string {
 		if len(paths) > 0 {
 			return paths
 		}
+		return []string{"C:\\"}
+
+	case "darwin":
+		// Default to the current user's home directory on macOS
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return []string{home}
+		}
+		return []string{"/Users"}
+
+	default: // linux
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return []string{home}
+		}
+		return []string{"/home"}
 	}
-	return []string{"/"}
 }
 
 func mustParseDuration(v string) time.Duration {
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		panic("invalid POLL_INTERVAL: " + err.Error())
+		panic("invalid duration value: " + err.Error())
 	}
 	return d
 }
