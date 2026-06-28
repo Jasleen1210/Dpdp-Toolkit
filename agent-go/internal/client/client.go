@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"path"
 	"time"
-	"log"
 
 	"dpdp-toolkit/agent-go/internal/config"
 	"dpdp-toolkit/agent-go/internal/types"
@@ -135,13 +134,13 @@ func (c *Client) SubmitLatestResult(ctx context.Context, payload types.TaskResul
 
 func (c *Client) SubmitCronRun(ctx context.Context, payload types.CronRunPayload) (*types.CronRunResponse, error) {
 	var resp types.CronRunResponse
-	
+
 	// Pass &resp to postJSON so the underlying decoder unmarshals the backend's JSON body
 	err := c.postJSON(ctx, c.cfg.CronRunsPath, payload, &resp)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &resp, nil
 }
 
@@ -231,7 +230,7 @@ func (c *Client) applyHeaders(req *http.Request) {
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
-	log.Printf("debug: authorization=%q org=%q", req.Header.Get("Authorization"), req.Header.Get("X-Org-Id"))
+	// log.Printf("debug: authorization=%q org=%q", req.Header.Get("Authorization"), req.Header.Get("X-Org-Id"))
 }
 
 func (c *Client) SubmitVulnerabilities(ctx context.Context, payload types.VulnerabilityReportPayload) error {

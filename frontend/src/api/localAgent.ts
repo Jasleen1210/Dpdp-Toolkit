@@ -32,7 +32,7 @@ export type TaskSummary = {
 };
 
 export type CreateTaskRequest = {
-  action_type: "search" | "update" | "delete";
+  action_type: "access" | "update" | "delete";
   target_value: string; // The email, name, or string pattern to look up
   device_id: string; // The specific targeted system identifier
   new_value?: string; // Required ONLY when action_type is "update"
@@ -525,4 +525,44 @@ export async function getMyOrganisations(
       Authorization: `Bearer ${trimmedToken}`,
     },
   });
+}
+
+export interface VulnerabilityItem {
+  title: string;
+  data_type: string;
+  exposure_type: string;
+  priority_score: number;
+  match_count: number;
+  path_or_port: string;
+  status: string;
+}
+
+export interface DeviceVulnerabilitiesResponse {
+  device_id: string;
+  cron_run_id?: string;
+  summary: {
+    total_vulnerabilities?: number;
+    total_exposed_matches?: number;
+    max_priority_score?: number;
+  };
+  vulnerabilities: VulnerabilityItem[];
+  updated_at?: string;
+}
+
+export async function getDeviceVulnerabilities(
+  config: LocalAgentApiConfig,
+  deviceId: string,
+): Promise<ApiResult<DeviceVulnerabilitiesResponse>> {
+  const validationError = validateAuth(config, "admin");
+  if (validationError) {
+    return { ok: false, status: 400, data: null, error: validationError };
+  }
+
+  return requestJSON<DeviceVulnerabilitiesResponse>(
+    `${normalizeBaseUrl(config.baseUrl)}/vulnerabilities/${encodeURIComponent(deviceId)}`,
+    {
+      method: "GET",
+      headers: jsonHeaders(config, "admin"),
+    },
+  );
 }

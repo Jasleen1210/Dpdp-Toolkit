@@ -4,9 +4,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
-	"runtime"
 
 	"dpdp-toolkit/agent-go/internal/config"
 	"dpdp-toolkit/agent-go/internal/pii"
@@ -83,28 +83,28 @@ func New(cfg config.Config) *Engine {
 }
 
 func (e *Engine) ScanTask(task types.Task) ([]types.Match, int) {
-	// Default to using global configured paths from configuration file
 	roots := normalizedRoots(e.cfg.ScanPaths)
 
-	// If this is a standard "access" discovery task, check if the Query field contains a target directory override
 	if task.Type == "access" && strings.TrimSpace(task.Query) != "" {
-		// If query contains characters that aren't paths, fallback safely to default config paths
-		if !strings.Contains(task.Query, "::") && (strings.Contains(task.Query, "/") || strings.Contains(task.Query, "\\")) {
-			roots = normalizedRoots([]string{task.Query})
+		q := strings.TrimSpace(task.Query)
+		if !strings.Contains(q, "::") && (strings.Contains(q, "/") || strings.Contains(q, "\\")) {
+			roots = normalizedRoots([]string{q})
 		}
 	}
 
-	// If this is an update/delete task, extract the file path target out of the packed query parameters
+	targetQuery := strings.TrimSpace(task.Query)
 	if task.Type == "update" || task.Type == "delete" {
 		parts := strings.Split(task.Query, "::")
-		if len(parts) > 0 && parts[0] != "" {
-			roots = normalizedRoots([]string{parts[0]})
-		}
+		targetQuery = strings.TrimSpace(parts[0])
 	}
 
-	query := strings.TrimSpace(strings.ToLower(task.Query))
-	allMatches, scannedFiles := e.scanRootsForQuery(roots, query, task.Query)
+	queryLower := strings.ToLower(targetQuery)
+	log.Printf("[ENGINE] Scanning roots %v for term: %q", roots, targetQuery)
 
+	allMatches, scannedFiles := e.scanRootsForQuery(roots, queryLower, targetQuery)
+
+	// Remove the masking-broken filter entirely for access/remediation tasks
+	// scanRootsForQuery already only returns files that contain the query term
 	return allMatches, scannedFiles
 }
 
@@ -134,9 +134,9 @@ func (e *Engine) scanRootsForQuery(roots []string, query string, originalQuery s
 				return nil
 			}
 
-			log.Printf("DEBUG: Checking file extension for path: %s", filePath) // <-- Add this
+			// log.Printf("DEBUG: Checking file extension for path: %s", filePath) // <-- Add this
 			if !e.isAllowedExtension(filePath) {
-				log.Printf("DEBUG: File skipped because extension is not allowed: %s", filePath) // <-- Add this
+				// log.Printf("DEBUG: File skipped because extension is not allowed: %s", filePath) // <-- Add this
 				return nil
 			}
 
@@ -165,21 +165,32 @@ func (e *Engine) scanRootsForQuery(roots []string, query string, originalQuery s
 				progress.addHit(valuesInFile)
 			}
 
-			for _, p := range piiHits {
-				allMatches = append(allMatches, types.Match{
-					Type:  p.Type,
-					Value: p.Value,
-					File:  filePath,
-				})
-			}
-
-			if queryHit && len(piiHits) == 0 {
+			// Always add a QUERY_HIT match when the query term is found,
+			// regardless of whether PII was also found
+			if queryHit {
 				allMatches = append(allMatches, types.Match{
 					Type:  "QUERY_HIT",
 					Value: originalQuery,
 					File:  filePath,
 				})
 			}
+
+			// Also add PII hits separately
+			// for _, p := range piiHits {
+			// 	allMatches = append(allMatches, types.Match{
+			// 		Type:  p.Type,
+			// 		Value: p.Value,
+			// 		File:  filePath,
+			// 	})
+			// }
+
+			// if queryHit && len(piiHits) == 0 {
+			// 	allMatches = append(allMatches, types.Match{
+			// 		Type:  "QUERY_HIT",
+			// 		Value: originalQuery,
+			// 		File:  filePath,
+			// 	})
+			// }
 
 			return nil
 		})
@@ -301,15 +312,15 @@ func (e *Engine) isAllowedExtension(filePath string) bool {
 	if _, all := e.cfg.IncludeExts["*"]; all {
 		return true
 	}
-	
+
 	// e.g., "d:\mock_s3\data.txt" -> ".txt"
 	extWithDot := strings.ToLower(filepath.Ext(filePath))
-	
+
 	// 1. Try matching with the dot (e.g., ".txt")
 	if _, ok := e.cfg.IncludeExts[extWithDot]; ok {
 		return true
 	}
-	
+
 	// 2. Try matching without the dot (e.g., "txt")
 	extWithoutDot := strings.TrimPrefix(extWithDot, ".")
 	_, ok := e.cfg.IncludeExts[extWithoutDot]

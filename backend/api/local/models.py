@@ -78,6 +78,6 @@ class TaskCreateRequest(BaseModel):
 
 class RemediationTaskRequest(BaseModel):
     device_id: str
-    action_type: Literal["update", "delete"]
+    action_type: Literal["access", "update", "delete"]
     target_value: str
     new_value: Optional[str] = None

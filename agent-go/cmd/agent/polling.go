@@ -36,9 +36,60 @@ func runTaskPollingCycle(ctx context.Context, apiClient *client.Client, scanEngi
 	}
 
 	for _, task := range tasks {
-		if (task.Type == "update" || task.Type == "delete") && task.Status == "pending" {
-			processRemediationTask(ctx, apiClient, scanEngine, deviceID, task)
+		log.Printf("DEBUG task: id=%s type=%q status=%q query=%q", task.ID, task.Type, task.Status, task.Query)
+
+		if task.Status != "pending" {
+			continue
 		}
+
+		// Case A: Handle remediation actions
+		if task.Type == "update" || task.Type == "delete" {
+			processRemediationTask(ctx, apiClient, scanEngine, deviceID, task)
+			continue
+		}
+
+		// Case B: Handle data discovery actions
+		if task.Type == "access" {
+			log.Printf("[ACCESS] Running targeted search sequence for string: %q", task.Query)
+
+			scanTask := task
+			scanTask.Type = "access"
+			scanTask.Query = task.Query
+
+			matches, _ := scanEngine.ScanTask(scanTask)
+
+			// ADD THIS TEMPORARY DEBUG LOOP HERE:
+			log.Printf("--- START MATCH INSPECTION ---")
+			for i, m := range matches {
+				// This will print exactly what properties exist on the matches your engine returns
+				log.Printf("Match [%d]: File=%s, Value=%s, Type=%s", i, m.File, m.Value, m.Type)
+			}
+			log.Printf("--- END MATCH INSPECTION ---")
+
+			log.Printf("[ACCESS] Verification complete for %s. Found %d verified locations.", task.ID, len(matches))
+
+			// Ensure matches is never nil — always send an empty list
+			if matches == nil {
+				matches = []types.Match{}
+			}
+
+			err := apiClient.SubmitResult(ctx, types.TaskResultPayload{
+				TaskID:   task.ID,
+				DeviceID: deviceID,
+				Status:   "completed",
+				Matches:  matches,
+			})
+
+			// 3. CRITICAL: Catch why the backend isn't saving the completed status!
+			if err != nil {
+				log.Printf("[ACCESS] ERROR: Failed to mark task %s as completed upstream: %v", task.ID, err)
+			} else {
+				log.Printf("[ACCESS] Success: Task %s status updated to completed in remote DB.", task.ID)
+			}
+			continue
+		}
+
+		log.Printf("Warning: unhandled task type %q", task.Type)
 	}
 }
 
