@@ -1,16 +1,16 @@
 Stored Cards:
 
-User: Raj
-Card Number: 4111111111111111
+User: Ramesh
+Card Number: [REDACTED]
 Expiry: 12/26
 
 User: Simran
 Card Number: [REDACTED]
 
-User: Amit Verma
-Email: amit.verma@company.com
+User: Amit Sharma
+Email: amit.sharma@company.com
 Card Number: 5555555555554444
 
-User: Neha Gupta
+User: Neha Kaur
 Email: neha.gupta@company.com
-Card Number: 5105105105105100
+Card Number: [REDACTED]

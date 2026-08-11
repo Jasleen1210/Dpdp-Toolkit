@@ -135,6 +135,10 @@ func runStandaloneScanCycle(ctx context.Context, apiClient *client.Client, scanE
 		log.Printf("failed to report vulnerabilities upstream: %v", err)
 	}
 
+	if matches == nil {
+		matches = []types.Match{}
+	}
+
 	return apiClient.SubmitLatestResult(ctx, types.TaskResultPayload{
 		DeviceID:     deviceID,
 		Status:       "completed",

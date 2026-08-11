@@ -99,6 +99,7 @@ export type TaskHistoryItem = {
   id: string;
   task_group_id?: string;
   device_id?: string;
+  type?: "access" | "update" | "delete" | string;
   query?: string;
   paths?: string[];
   status: "pending" | "completed" | "expired" | string;
@@ -109,6 +110,12 @@ export type TaskHistoryItem = {
   matches_count: number;
   pii_types: string[];
   matches: TaskResultMatch[];
+  delete_replacements?: Array<{
+    file: string;
+    original_value: string;
+    masked_value: string;
+    block_signature: string;
+  }>;
 };
 
 export type DeviceDailyScanReportItem = {

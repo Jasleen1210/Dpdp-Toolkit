@@ -10,6 +10,11 @@ type Match struct {
 	Value string
 }
 
+type RawMatch struct {
+	Type  string
+	Value string
+}
+
 var patterns = map[string]*regexp.Regexp{
 	"EMAIL":        regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`), // Single dot escape
 	"PHONE_IN":     regexp.MustCompile(`\b[6-9]\d{9}\b`),                                 // Single backslash for \b and \d
@@ -54,6 +59,33 @@ func Detect(content string, maxPerType int) []Match {
 	return results
 }
 
+func DetectRaw(content string, maxPerType int) []RawMatch {
+	if maxPerType <= 0 {
+		maxPerType = 10
+	}
+
+	results := make([]RawMatch, 0)
+
+	for piiType, re := range patterns {
+		found := re.FindAllString(content, maxPerType)
+		for _, v := range found {
+			results = append(results, RawMatch{
+				Type:  piiType,
+				Value: v,
+			})
+		}
+	}
+
+	for _, v := range detectCreditCardsRaw(content, maxPerType) {
+		results = append(results, RawMatch{
+			Type:  "CREDIT_CARD",
+			Value: v,
+		})
+	}
+
+	return results
+}
+
 func detectCreditCards(content string, maxPerType int) []string {
 	found := creditCardPattern.FindAllString(content, maxPerType*3)
 	if len(found) == 0 {
@@ -83,6 +115,10 @@ func detectCreditCards(content string, maxPerType int) []string {
 	}
 
 	return out
+}
+
+func detectCreditCardsRaw(content string, maxPerType int) []string {
+	return detectCreditCards(content, maxPerType)
 }
 
 func isLuhnValid(number string) bool {

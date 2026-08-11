@@ -17,9 +17,27 @@ from .models import (
     UserRemediationRequest,
 )
 
-from datetime import timezone
+try:
+    from services.local.local_db import (
+        device_delete_redactions_collection,
+        device_results_collection,
+        device_tasks_collection,
+        devices_collection,
+        device_cron_logs_collection,
+        device_vulnerabilities_collection,
+    )
+except ImportError:
+    from backend.services.local.local_db import (
+        device_delete_redactions_collection,
+        device_results_collection,
+        device_tasks_collection,
+        devices_collection,
+        device_cron_logs_collection,
+        device_vulnerabilities_collection,
+    )
 
-from datetime import timezone, datetime
+router = APIRouter()
+
 
 def _iso(dt):
     if not dt:
@@ -33,25 +51,6 @@ def _iso(dt):
         dt = dt.replace(tzinfo=timezone.utc)
 
     return dt.isoformat()
-
-try:
-    from services.local.local_db import (
-        device_results_collection,
-        device_tasks_collection,
-        devices_collection,
-        device_cron_logs_collection,
-        device_vulnerabilities_collection,
-    )
-except ImportError:
-    from backend.services.local.local_db import (
-        device_results_collection,
-        device_tasks_collection,
-        devices_collection,
-        device_cron_logs_collection,
-        device_vulnerabilities_collection,
-    )
-
-router = APIRouter()
 
 
 def _get_registered_device_or_fail(device_id: str, org_id: str):
@@ -146,10 +145,12 @@ async def list_distributed_tasks(
     for task in tasks:
         result = result_map.get(task["id"])
         matches = result.get("matches", []) if result else []
+        delete_replacements = result.get("delete_replacements", []) if result else []
         merged.append({
             "id": task["id"],
             "task_group_id": task.get("task_group_id"),
             "device_id": task.get("device_id"),
+            "type": task.get("type", "access"),
             "query": task.get("query"),
             "paths": task.get("paths", []),
             "status": task.get("status", "pending"),
@@ -160,6 +161,7 @@ async def list_distributed_tasks(
             "matches_count": len(matches),
             "pii_types": sorted({m.get("type", "") for m in matches if m.get("type")}),
             "matches": matches,
+            "delete_replacements": delete_replacements,
         })
 
     return {"tasks": merged}
@@ -302,6 +304,16 @@ async def submit_device_result(
             else:
                 processed_matches.append(dict(m))
 
+    processed_delete_replacements = []
+    if getattr(req, "delete_replacements", None):
+        for replacement in req.delete_replacements:
+            if hasattr(replacement, "dict"):
+                processed_delete_replacements.append(replacement.dict())
+            elif hasattr(replacement, "model_dump"):
+                processed_delete_replacements.append(replacement.model_dump())
+            else:
+                processed_delete_replacements.append(dict(replacement))
+
     # 5. Insert scan metadata into the device results tracking collection
     device_results_collection.insert_one({
         "task_id": req.task_id,
@@ -310,8 +322,36 @@ async def submit_device_result(
         "status": req.status,
         "scanned_files": getattr(req, "scanned_files", 0) or len(processed_matches),
         "matches": processed_matches,  # 🔑 This securely drops file paths into your Mongo DB
+        "delete_replacements": processed_delete_replacements,
         "received_at": now,
     })
+
+    if processed_delete_replacements:
+        for replacement in processed_delete_replacements:
+            device_delete_redactions_collection.update_one(
+                {
+                    "organisation_id": org_id,
+                    "block_signature": replacement.get("block_signature"),
+                    "original_value": replacement.get("original_value"),
+                },
+                {
+                    "$setOnInsert": {
+                        "created_at": now,
+                        "organisation_id": org_id,
+                        "block_signature": replacement.get("block_signature"),
+                        "original_value": replacement.get("original_value"),
+                        "masked_value": replacement.get("masked_value"),
+                    },
+                    "$set": {
+                        "updated_at": now,
+                        "last_task_id": req.task_id,
+                        "last_device_id": req.device_id,
+                        "last_file": replacement.get("file"),
+                        "masked_value": replacement.get("masked_value"),
+                    },
+                },
+                upsert=True,
+            )
 
     # 6. Finalize task workflow transition to completed status
     device_tasks_collection.update_one(

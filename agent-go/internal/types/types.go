@@ -55,12 +55,20 @@ type Match struct {
 	File  string `json:"file"`
 }
 
+type DeleteReplacement struct {
+	File           string `json:"file"`
+	OriginalValue  string `json:"original_value"`
+	MaskedValue    string `json:"masked_value"`
+	BlockSignature string `json:"block_signature"`
+}
+
 type TaskResultPayload struct {
-	TaskID       string  `json:"task_id"`
-	DeviceID     string  `json:"device_id"`
-	Status       string  `json:"status"`
-	ScannedFiles int     `json:"scanned_files"`
-	Matches      []Match `json:"matches"`
+	TaskID            string              `json:"task_id"`
+	DeviceID          string              `json:"device_id"`
+	Status            string              `json:"status"`
+	ScannedFiles      int                 `json:"scanned_files"`
+	Matches           []Match             `json:"matches"`
+	DeleteReplacements []DeleteReplacement `json:"delete_replacements,omitempty"`
 }
 
 type FindingEntry struct {

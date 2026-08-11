@@ -1,19 +1,19 @@
 Transaction Logs:
 
 User: Amit
-Credit Card: 4111111111111111
+Credit Card: [REDACTED]
 Amount: 5000
 
-User: Neha
-Credit Card: 5500000000000004
-Amount: 12000
+User: jctb3lbi
+Credit Card: 55tv6gt7nbqwjx04
+Amount: 12z00
 
-User: Jasleen Sharma
-Email: Jasleen.sharma@company.com
-Credit Card: 4012888888881881
-Amount: 8700
+User: Jatzptprusrav
+Email: Japegqfmsysig4dgntjo52gom
+Credit Card: 40oqb33ae3rzyh81
+Amount: p6jvtr6c
 
-User: Simran Kaur
-Email: simran.kaur@company.com
-Credit Card: 4222222222222
-Amount: 4200
+User: Sianzq33zur
+Email: sioisfyscrj5zcchyab6iom
+Credit Card: 42yqdipkkut22
+Amount: vlfiyreq

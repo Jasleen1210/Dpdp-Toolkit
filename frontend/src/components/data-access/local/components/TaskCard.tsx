@@ -24,25 +24,51 @@ interface Props {
 }
 
 export function TaskCard({ task, expanded, onToggle }: Props) {
+  const [taskSource, taskTarget] = task.query?.includes("::") ? task.query.split("::", 2) : [task.query || "", ""];
+  const displayQuery = taskTarget ? `${taskSource} → ${taskTarget}` : (task.query || "-");
+  const inferredType = task.type || (taskTarget ? "update" : "access");
+  const taskType = inferredType.toUpperCase();
+  const showBeforeAfter = inferredType === "update" || inferredType === "delete";
+  const beforeValue = taskSource || task.query || "-";
+  const deleteMaskedValues = inferredType === "delete"
+    ? Array.from(new Set((task.delete_replacements || []).map((entry) => entry.masked_value).filter(Boolean)))
+    : [];
+  const afterValue = inferredType === "delete"
+    ? (deleteMaskedValues.length > 0 ? deleteMaskedValues.join(", ") : "masked")
+    : (taskTarget || task.query || "-");
+
   return (
     <div className="border border-border rounded-sm overflow-hidden">
       <button
-        className="w-full flex items-start justify-between gap-3 px-3 py-2 text-left bg-muted/20 hover:bg-muted/40"
+        className="w-full flex items-stretch gap-0 text-left bg-muted/20 hover:bg-muted/40"
         onClick={onToggle}
       >
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-[12px]">
-            <span className="font-medium text-foreground">{task.query || "-"}</span>
-            <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${statusClass(task.status)}`}>
-              {task.status}
-            </span>
-          </div>
-          <div className="text-[11px] text-muted-foreground break-all">Task ID: {task.id}</div>
-          <div className="text-[11px] text-muted-foreground">
-            Device: {task.device_id || "-"} | Scanned Files: {task.scanned_files} | Matches: {task.matches_count}
-          </div>
+        <div className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-background/40 px-1">
+          <span className="rotate-180 [writing-mode:vertical-rl] text-[9px] font-semibold uppercase tracking-[0.35em] text-muted-foreground">
+            {taskType}
+          </span>
         </div>
-        <ChevronDown className={`h-4 w-4 mt-1 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} />
+
+        <div className="flex flex-1 items-start justify-between gap-3 px-3 py-2">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 text-[12px]">
+              <span className="font-medium text-foreground">{displayQuery}</span>
+              <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${statusClass(task.status)}`}>
+                {task.status}
+              </span>
+            </div>
+            {showBeforeAfter && (
+              <div className="text-[11px] text-muted-foreground">
+                Before: <span className="text-foreground break-all">{beforeValue}</span> | After: <span className="text-foreground break-all">{afterValue}</span>
+              </div>
+            )}
+            <div className="text-[11px] text-muted-foreground break-all">Task ID: {task.id}</div>
+            <div className="text-[11px] text-muted-foreground">
+              Device: {task.device_id || "-"} | Scanned Files: {task.scanned_files} | Matches: {task.matches_count}
+            </div>
+          </div>
+          <ChevronDown className={`h-4 w-4 mt-1 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} />
+        </div>
       </button>
 
       {expanded && (

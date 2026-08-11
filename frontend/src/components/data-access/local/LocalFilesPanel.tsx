@@ -158,6 +158,26 @@ export default function LocalFilesPanel() {
     void refreshTaskHistory();
   }, [apiConfig, baseUrl, orgId]);
 
+  useEffect(() => {
+    if (activeTab !== "new-task" || !baseUrl.trim() || !orgId.trim()) return;
+
+    let cancelled = false;
+    const syncTaskUpdates = async () => {
+      if (cancelled) return;
+      await refreshTaskHistory();
+    };
+
+    void syncTaskUpdates();
+    const timer = window.setInterval(() => {
+      void syncTaskUpdates();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeTab, apiConfig, baseUrl, orgId]);
+
   const handleApproveDevice = async (deviceId: string) => {
     clearMessages();
     if (!deviceId.trim()) { setErrorText("Device ID is required."); return; }

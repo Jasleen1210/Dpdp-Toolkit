@@ -49,7 +49,7 @@ func modifyLocalFile(filePath, actionType, targetValue, newValue string) error {
 
 	var modifiedStr string
 	if actionType == "delete" {
-		modifiedStr = strings.ReplaceAll(fileStr, targetValue, "[REDACTED]")
+		modifiedStr = maskDeleteValue(fileStr, targetValue)
 	} else {
 		modifiedStr = strings.ReplaceAll(fileStr, targetValue, newValue)
 	}
@@ -77,7 +77,7 @@ func handleDiskModificationTask(task types.Task) error {
 
 	var modifiedStr string
 	if task.Type == "delete" {
-		modifiedStr = strings.ReplaceAll(fileStr, targetValue, "[REDACTED]")
+		modifiedStr = maskDeleteValue(fileStr, targetValue)
 	} else if task.Type == "update" {
 		if len(parts) < 3 {
 			return fmt.Errorf("update task missing the new replacement value parameter string")
@@ -91,4 +91,31 @@ func handleDiskModificationTask(task types.Task) error {
 		return fmt.Errorf("target value to update/delete was not found inside the specified file contents")
 	}
 	return os.WriteFile(filePath, []byte(modifiedStr), 0644)
+}
+
+func maskDeleteValue(fileStr, targetValue string) string {
+	if strings.TrimSpace(targetValue) == "" {
+		return fileStr
+	}
+
+	masked := stableDeletionToken(deleteMaskSignature(fileStr, targetValue), targetValue)
+	if masked == "" {
+		masked = targetValue
+	}
+
+	return strings.ReplaceAll(fileStr, targetValue, masked)
+}
+
+func deleteMaskSignature(fileStr, targetValue string) string {
+	lines := strings.Split(fileStr, "\n")
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		parts = append(parts, strings.ToLower(trimmed))
+	}
+	parts = append(parts, strings.ToLower(strings.TrimSpace(targetValue)))
+	return strings.Join(parts, "|")
 }
