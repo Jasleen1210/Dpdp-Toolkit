@@ -111,7 +111,7 @@ async def create_request(req: DataSubjectRequest):
             "action": "DELETE",
             "identifier": new_req["identifier"],
             "status": "AWAITING_APPROVAL",
-            "message": "Delete request is awaiting approval. Data remains in its cloud locations until approval is completed.",
+            "message": "Delete request has been submitted and is awaiting approval. It will be processed within 24-48 hours.",
         }
 
     return {"request": new_req, "result": result }

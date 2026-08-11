@@ -141,10 +141,26 @@ export default function LoginPage() {
         </label>
 
         {error ? (
-          <div className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
-            {error}
-          </div>
-        ) : null}
+            <div className="rounded-sm border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+              {Array.isArray(error)
+                ? error.map((item: any, index: number) => {
+                    const field = item?.loc?.[item.loc.length - 1];
+
+                    if (field === "password") {
+                      return (
+                        <div key={index}>
+                          Password must be at least 8 characters.
+                        </div>
+                      );
+                    }
+
+                    return <div key={index}>{item?.msg || "Invalid input"}</div>;
+                  })
+                : typeof error === "object"
+                  ? JSON.stringify(error)
+                  : String(error)}
+            </div>
+          ) : null}
 
         <button
           type="submit"

@@ -32,3 +32,29 @@ users_collection = db["users"]
 organizations_collection = db["organizations"]
 org_memberships_collection = db["org_memberships"]
 sessions_collection = db["sessions"]
+
+
+def ensure_seed_data() -> None:
+    if not _use_mock_db():
+        return
+
+    org_id = os.getenv("ORG_ID", "dpdp-org").strip()
+    if not org_id:
+        return
+
+    existing = organizations_collection.find_one({"id": org_id}, {"_id": 0})
+    if existing:
+        return
+
+    organizations_collection.insert_one(
+        {
+            "id": org_id,
+            "name": "DPDP Org",
+            "agent_token": os.getenv("DEVICE_SHARED_TOKEN", "password123"),
+            "admin_api_key": os.getenv("ADMIN_API_KEY", "admin123"),
+            "created_at": "2026-01-01T00:00:00+00:00",
+        }
+    )
+
+
+ensure_seed_data()
