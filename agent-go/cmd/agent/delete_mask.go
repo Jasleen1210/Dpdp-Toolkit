@@ -1,5 +1,5 @@
 package main
-
+ 
 import (
 	"context"
 	"crypto/sha256"
@@ -10,12 +10,20 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
+ 
 	"dpdp-toolkit/agent-go/internal/client"
-	"dpdp-toolkit/agent-go/internal/pii"
 	"dpdp-toolkit/agent-go/internal/types"
 )
 
+func getEnv(key, fallback string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return fallback
+}
+
+var deletionTokenSalt = getEnv("DELETION_TOKEN", "abcde12345fghij67890")
+ 
 type deleteRedactionResult struct {
 	changed      bool
 	blocks       int
@@ -23,7 +31,7 @@ type deleteRedactionResult struct {
 	values       int
 	entries      []types.DeleteReplacement
 }
-
+ 
 func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remediationPlan) {
 	status := "completed"
 	totalFilesChanged := 0
@@ -31,7 +39,7 @@ func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remedia
 	totalReplacements := 0
 	totalValuesMasked := 0
 	deleteEntries := make([]types.DeleteReplacement, 0)
-
+ 
 	for _, match := range plan.matches {
 		result, err := redactDeleteFile(match.File, plan.targetValue)
 		if err != nil {
@@ -47,7 +55,7 @@ func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remedia
 			deleteEntries = append(deleteEntries, result.entries...)
 		}
 	}
-
+ 
 	log.Printf(
 		"[DELETE] task=%s target=%q files_changed=%d blocks_changed=%d values_masked=%d replacements=%d delete_entries=%d",
 		plan.task.ID,
@@ -58,7 +66,7 @@ func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remedia
 		totalReplacements,
 		len(deleteEntries),
 	)
-
+ 
 	if status != "completed" {
 		apiClient.SubmitResult(ctx, types.TaskResultPayload{
 			TaskID:            plan.task.ID,
@@ -70,7 +78,7 @@ func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remedia
 		})
 	}
 }
-
+ 
 func redactDeleteFile(filePath, targetValue string) (deleteRedactionResult, error) {
 	result, updated, err := buildDeleteRedaction(filePath, targetValue)
 	if err != nil {
@@ -79,20 +87,20 @@ func redactDeleteFile(filePath, targetValue string) (deleteRedactionResult, erro
 	if !result.changed {
 		return result, nil
 	}
-
+ 
 	if err := os.WriteFile(filePath, []byte(updated), 0644); err != nil {
 		return deleteRedactionResult{}, err
 	}
-
+ 
 	return result, nil
 }
-
+ 
 func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, string, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return deleteRedactionResult{}, "", err
 	}
-
+ 
 	original := string(content)
 	blocks, separator := splitDeletionBlocks(original)
 	changed := false
@@ -100,29 +108,29 @@ func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, 
 	totalReplacements := 0
 	totalValues := 0
 	entries := make([]types.DeleteReplacement, 0)
-
+ 
 	for i, block := range blocks {
 		if !containsInsensitive(block, targetValue) {
 			continue
 		}
-
-		signature := deletionSignature(block, targetValue)
-		replacements := buildDeleteReplacements(block, targetValue, signature)
+ 
+		signature := deletionSignature(block)
+		replacements := buildDeleteReplacements(targetValue)
 		if len(replacements) == 0 {
 			continue
 		}
-
+ 
 		maskedBlock, blockReplacements := applyDeleteReplacements(block, replacements)
 		if blockReplacements == 0 {
 			continue
 		}
-
+ 
 		blocks[i] = maskedBlock
 		changed = true
 		totalBlocks++
 		totalReplacements += blockReplacements
 		totalValues += len(replacements)
-
+ 
 		for originalValue, maskedValue := range replacements {
 			entries = append(entries, types.DeleteReplacement{
 				File:           filePath,
@@ -131,7 +139,7 @@ func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, 
 				BlockSignature: signature,
 			})
 		}
-
+ 
 		log.Printf(
 			"[DELETE] file=%s signature=%s values=%d replacements=%d",
 			filePath,
@@ -140,16 +148,16 @@ func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, 
 			blockReplacements,
 		)
 	}
-
+ 
 	if !changed {
 		return deleteRedactionResult{changed: false}, original, nil
 	}
-
+ 
 	updated := strings.Join(blocks, separator)
 	if strings.HasSuffix(original, "\n") && !strings.HasSuffix(updated, "\n") {
 		updated += "\n"
 	}
-
+ 
 	if len(entries) > 1 {
 		sort.SliceStable(entries, func(i, j int) bool {
 			if entries[i].File == entries[j].File {
@@ -161,7 +169,7 @@ func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, 
 			return entries[i].File < entries[j].File
 		})
 	}
-
+ 
 	return deleteRedactionResult{
 		changed:      true,
 		blocks:       totalBlocks,
@@ -170,13 +178,13 @@ func buildDeleteRedaction(filePath, targetValue string) (deleteRedactionResult, 
 		entries:      entries,
 	}, updated, nil
 }
-
+ 
 func splitDeletionBlocks(content string) ([]string, string) {
 	if strings.Contains(content, "\n\n") {
 		parts := strings.Split(content, "\n\n")
 		return parts, "\n\n"
 	}
-
+ 
 	lines := strings.Split(content, "\n")
 	blocks := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -190,15 +198,12 @@ func splitDeletionBlocks(content string) ([]string, string) {
 	}
 	return blocks, "\n"
 }
-
-func deletionSignature(block, targetValue string) string {
-	tokens := collectDeletionTokens(block, targetValue)
-	sort.Strings(tokens)
-	joined := strings.Join(tokens, "|")
-	sum := sha256.Sum256([]byte(joined))
+ 
+func deletionSignature(block string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(block))))
 	return fmt.Sprintf("%x", sum[:])
 }
-
+ 
 func signatureShort(signature string) string {
 	if len(signature) <= 12 {
 		return signature
@@ -206,123 +211,38 @@ func signatureShort(signature string) string {
 	return signature[:12]
 }
 
-func collectDeletionTokens(block, targetValue string) []string {
-	seen := make(map[string]struct{})
-	tokens := make([]string, 0)
-	add := func(v string) {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return
-		}
-		key := strings.ToLower(v)
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		tokens = append(tokens, key)
-	}
-
-	if targetValue != "" {
-		add(targetValue)
-	}
-
-	for _, line := range strings.Split(block, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		if strings.Contains(trimmed, ",") {
-			for _, cell := range strings.Split(trimmed, ",") {
-				add(cell)
-			}
-			continue
-		}
-
-		if idx := strings.IndexAny(trimmed, ":="); idx >= 0 {
-			add(trimmed[idx+1:])
-			continue
-		}
-
-		if containsInsensitive(trimmed, targetValue) {
-			add(trimmed)
-		}
-	}
-
-	for _, match := range pii.DetectRaw(block, 10) {
-		add(match.Value)
-	}
-
-	return tokens
-}
-
-func buildDeleteReplacements(block, targetValue, signature string) map[string]string {
+func buildDeleteReplacements(targetValue string) map[string]string {
 	tokens := make(map[string]string)
-	for _, line := range strings.Split(block, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		if strings.Contains(trimmed, ",") {
-			for _, cell := range strings.Split(trimmed, ",") {
-				cell = strings.TrimSpace(cell)
-				if cell != "" {
-					tokens[cell] = stableDeletionToken(signature, cell)
-				}
-			}
-			continue
-		}
-
-		if idx := strings.IndexAny(trimmed, ":="); idx >= 0 {
-			value := strings.TrimSpace(trimmed[idx+1:])
-			if value != "" {
-				tokens[value] = stableDeletionToken(signature, value)
-			}
-			continue
-		}
-
-		if containsInsensitive(trimmed, targetValue) {
-			tokens[trimmed] = stableDeletionToken(signature, trimmed)
-		}
-	}
-
-	for _, match := range pii.DetectRaw(block, 10) {
-		value := strings.TrimSpace(match.Value)
-		if value != "" {
-			tokens[value] = stableDeletionToken(signature, value)
-		}
-	}
-
+	
 	if targetValue != "" {
-		tokens[targetValue] = stableDeletionToken(signature, targetValue)
+		tokens[targetValue] = stableDeletionToken(targetValue)
 	}
-
+ 
 	return tokens
 }
-
+ 
 func applyDeleteReplacements(content string, replacements map[string]string) (string, int) {
 	if len(replacements) == 0 {
 		return content, 0
 	}
-
+ 
 	type pair struct {
 		old string
 		new string
 	}
-
+ 
 	pairs := make([]pair, 0, len(replacements))
 	for old, newValue := range replacements {
 		pairs = append(pairs, pair{old: old, new: newValue})
 	}
-
+ 
 	sort.SliceStable(pairs, func(i, j int) bool {
 		if len(pairs[i].old) == len(pairs[j].old) {
 			return pairs[i].old < pairs[j].old
 		}
 		return len(pairs[i].old) > len(pairs[j].old)
 	})
-
+ 
 	updated := content
 	total := 0
 	for _, p := range pairs {
@@ -330,35 +250,35 @@ func applyDeleteReplacements(content string, replacements map[string]string) (st
 		updated, count = replaceInsensitive(updated, p.old, p.new)
 		total += count
 	}
-
+ 
 	return updated, total
 }
-
+ 
 func replaceInsensitive(content, oldValue, newValue string) (string, int) {
 	if strings.TrimSpace(oldValue) == "" {
 		return content, 0
 	}
-
+ 
 	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(oldValue))
 	matches := re.FindAllStringIndex(content, -1)
 	if len(matches) == 0 {
 		return content, 0
 	}
-
+ 
 	return re.ReplaceAllString(content, newValue), len(matches)
 }
-
-func stableDeletionToken(signature, original string) string {
+ 
+func stableDeletionToken(original string) string {
 	if strings.TrimSpace(original) == "" {
 		return original
 	}
-
+ 
 	if len(original) <= 4 {
-		sum := sha256.Sum256([]byte(signature + "|" + original))
+		sum := sha256.Sum256([]byte(deletionTokenSalt + "|" + original))
 		return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:])[:8])
 	}
-
-	sum := sha256.Sum256([]byte(signature + "|" + original))
+ 
+	sum := sha256.Sum256([]byte(deletionTokenSalt + "|" + original))
 	encoded := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(sum[:]))
 	middleLen := len(original) - 4
 	if middleLen > len(encoded) {
@@ -370,7 +290,7 @@ func stableDeletionToken(signature, original string) string {
 	}
 	return original[:2] + encoded[:middleLen] + original[len(original)-2:]
 }
-
+ 
 func containsInsensitive(haystack, needle string) bool {
 	if needle == "" {
 		return false

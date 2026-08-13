@@ -98,24 +98,10 @@ func maskDeleteValue(fileStr, targetValue string) string {
 		return fileStr
 	}
 
-	masked := stableDeletionToken(deleteMaskSignature(fileStr, targetValue), targetValue)
+	masked := stableDeletionToken(targetValue)
 	if masked == "" {
 		masked = targetValue
 	}
 
 	return strings.ReplaceAll(fileStr, targetValue, masked)
-}
-
-func deleteMaskSignature(fileStr, targetValue string) string {
-	lines := strings.Split(fileStr, "\n")
-	parts := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		parts = append(parts, strings.ToLower(trimmed))
-	}
-	parts = append(parts, strings.ToLower(strings.TrimSpace(targetValue)))
-	return strings.Join(parts, "|")
 }
