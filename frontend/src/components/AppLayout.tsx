@@ -162,10 +162,14 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const handleLogout = async () => {
-    await dispatch(logoutUser());
-    navigate("/login", { replace: true });
+    setDropdownOpen(false);
+    const result = await dispatch(logoutUser());
+    if (logoutUser.fulfilled.match(result)) {
+      navigate("/login", { replace: true });
+    }
   };
 
   return (
@@ -215,7 +219,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
               <Bell className="w-4 h-4 text-muted-foreground" />
               <span className="absolute top-1 right-1 w-2 h-2 bg-primary rounded-full" />
             </button>
-            <DropdownMenu>
+            <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
               <DropdownMenuTrigger asChild>
                 <button
                   className="p-2 rounded-sm hover:bg-muted"
@@ -235,14 +239,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                     Settings
                   </Link>
                 </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <button
-                    type="button"
-                    className="w-full text-left"
-                    onClick={() => void handleLogout()}
-                  >
-                    Log out
-                  </button>
+                <DropdownMenuItem
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    handleLogout();
+                  }}
+                >
+                  Log out
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

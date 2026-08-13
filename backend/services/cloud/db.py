@@ -19,3 +19,4 @@ db = client["cloud_db"]
 collection = db["cloud_classification"]
 requests_collection = db["user_requests"]
 logs_collection = db["cloud_logs"]
+    
