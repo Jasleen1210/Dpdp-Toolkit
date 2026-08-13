@@ -118,16 +118,16 @@ export function TaskForm({
             <div className="text-[11px] text-muted-foreground">
               {taskTargetDeviceIds.length > 0
                 ? `Selected ${taskTargetDeviceIds.length} device(s)`
-                : "No devices selected. Task will run on all approved devices."}
+                : "No devices selected. Request will run on all approved devices."}
             </div>
           </div>
         )}
       </div>
 
       <div className="md:col-span-2 flex flex-wrap gap-2">
-        <Button onClick={onCreateTask} disabled={loading}>Create Task</Button>
+        <Button onClick={onCreateTask} disabled={loading}>Create Request</Button>
         <Button variant="outline" onClick={onFetchResults} disabled={loading}>
-          Fetch Task Group Results
+          Fetch Request Group Results
         </Button>
       </div>
     </div>

@@ -143,7 +143,7 @@ export default function LocalFilesPanel() {
 
   const refreshTaskHistory = async (): Promise<TaskHistoryItem[]> => {
     const res = await listTasks(apiConfig, { limit: 250 });
-    if (!res.ok || !res.data) { setErrorText(`Task load failed: ${res.error}`); return []; }
+    if (!res.ok || !res.data) { setErrorText(`Request load failed: ${res.error}`); return []; }
     const tasks = res.data.tasks || [];
     setTaskHistory(tasks);
     return tasks;
@@ -214,18 +214,18 @@ export default function LocalFilesPanel() {
     await refreshTaskHistory();
     setLoading(false);
     if (errs.length) setErrorText(`Failed on some devices:\n${errs.join("\n")}`);
-    if (ok > 0) setStatusText(`Created ${ok} task(s) across ${targets.length} device(s).`);
+    if (ok > 0) setStatusText(`Created ${ok} request(s) across ${targets.length} device(s).`);
   };
 
   const handleFetchTaskResults = async () => {
     clearMessages();
-    if (!latestTaskGroupId.trim()) { setErrorText("Create a task first."); return; }
+    if (!latestTaskGroupId.trim()) { setErrorText("Create a request first."); return; }
     setLoading(true);
     const res = await getTaskGroupResults(apiConfig, latestTaskGroupId.trim());
     setLoading(false);
     if (!res.ok || !res.data) { setErrorText(`Fetch failed: ${res.error}`); return; }
     setTaskResultGroup(res.data);
-    setStatusText(`Loaded ${res.data.tasks.length} tasks, ${res.data.results.length} results.`);
+    setStatusText(`Loaded ${res.data.tasks.length} requests, ${res.data.results.length} results.`);
   };
 
   return (
@@ -234,7 +234,7 @@ export default function LocalFilesPanel() {
       <div className="bg-card border border-border rounded-sm p-4 space-y-3">
         <h2 className="text-[14px] font-semibold text-foreground">Local Agent Orchestrator</h2>
         <p className="text-[12px] text-muted-foreground">
-          Register devices, create new tasks, and monitor pending/history in one place.
+          Register devices, create new requests, and monitor pending/history in one place.
         </p>
 
         <div className="flex items-center gap-2 border-b border-border pb-2">
@@ -247,7 +247,7 @@ export default function LocalFilesPanel() {
               }`}
               onClick={() => setActiveTab(tab)}
             >
-              {tab === "register" ? "Register Devices" : "Add New Tasks"}
+              {tab === "register" ? "Register Devices" : "Add New Requests"}
             </button>
           ))}
           <Button type="button" variant="outline" size="sm" className="ml-auto"
@@ -318,16 +318,16 @@ export default function LocalFilesPanel() {
       {/* Stats bar */}
       <div className="bg-card border border-border rounded-sm p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-[13px] font-semibold text-foreground">Task Details</h3>
+          <h3 className="text-[13px] font-semibold text-foreground">Request Details</h3>
           <Button variant="outline" size="sm" disabled={loading}
-            onClick={async () => { clearMessages(); const t = await refreshTaskHistory(); setStatusText(`Loaded ${t.length} tasks.`); }}>
+            onClick={async () => { clearMessages(); const t = await refreshTaskHistory(); setStatusText(`Loaded ${t.length} requests.`); }}>
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[12px]">
           {[
-            { label: "Pending Tasks", value: pendingTasks.length },
-            { label: "History Tasks", value: historyTasks.length },
+            { label: "Pending Requests", value: pendingTasks.length },
+            { label: "History Requests", value: historyTasks.length },
             { label: "Registered Devices", value: devices.length },
           ].map(({ label, value }) => (
             <div key={label} className="bg-muted/50 border border-border rounded-sm p-3">
@@ -382,9 +382,9 @@ export default function LocalFilesPanel() {
       ) : (
         <div className="bg-card border border-border rounded-sm p-3">
           <div className="mb-2 flex items-center justify-between">
-            <h3 className="text-[12px] font-semibold text-foreground">Task Updates</h3>
+            <h3 className="text-[12px] font-semibold text-foreground">Request Updates</h3>
             <Button variant="outline" size="sm" disabled={loading}
-              onClick={async () => { clearMessages(); const t = await refreshTaskHistory(); setStatusText(`Loaded ${t.length} tasks.`); }}>
+              onClick={async () => { clearMessages(); const t = await refreshTaskHistory(); setStatusText(`Loaded ${t.length} requests.`); }}>
               <RefreshCw className="h-3.5 w-3.5" /> Refresh
             </Button>
           </div>
@@ -398,7 +398,7 @@ export default function LocalFilesPanel() {
               />
             )) : (
               <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
-                No task updates available.
+                No request updates available.
               </div>
             )}
           </div>
