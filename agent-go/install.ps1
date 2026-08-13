@@ -65,7 +65,10 @@ function Register-ScheduledTaskFallback {
   # No admin rights: run at logon via Task Scheduler and restart on failure.
   Write-Host 'Registering the agent as a scheduled task (runs at logon)...'
   $taskName = 'DPDPAgent'
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   schtasks /Delete /TN $taskName /F 2>$null | Out-Null
+  $ErrorActionPreference = $prev
  
   $action = New-ScheduledTaskAction -Execute $agentExe -Argument 'run' -WorkingDirectory $installDir
   $trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -78,14 +81,26 @@ function Register-ScheduledTaskFallback {
  
 # Registers a real Windows Service (auto-start, restart on failure) when we have
 # admin rights; otherwise falls back to a per-user scheduled task at logon.
+$prev = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 & $agentExe uninstall 2>$null | Out-Null
+$ErrorActionPreference = $prev
+
 $serviceInstalled = $false
 if (Test-IsAdministrator) {
   Write-Host 'Registering the agent as a Windows Service...'
+  
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
   & $agentExe install
-  if ($LASTEXITCODE -eq 0) {
+  $installExitCode = $LASTEXITCODE
+  if ($installExitCode -eq 0) {
     $serviceInstalled = $true
-    sc.exe failure dpdp-agent reset= 86400 actions= restart/10000/restart/30000/restart/60000 | Out-Null
+    sc.exe failure dpdp-agent reset= 86400 actions= restart/10000/restart/30000/restart/60000 2>$null | Out-Null
+  }
+  $ErrorActionPreference = $prev
+
+  if ($serviceInstalled) {
     Write-Host 'Windows Service "dpdp-agent" installed and started.'
   } else {
     Write-Warning 'Service installation failed; falling back to a scheduled task.'
