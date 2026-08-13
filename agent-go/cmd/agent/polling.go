@@ -12,11 +12,11 @@ import (
 )
 
 type remediationPlan struct {
-	task         types.Task
-	targetValue  string
-	newValue     string
-	matches      []types.Match
-	scannedFiles int
+	task               types.Task
+	targetValue        string
+	newValue           string
+	matches            []types.Match
+	scannedFiles       int
 	deleteReplacements []types.DeleteReplacement
 }
 
@@ -88,7 +88,7 @@ func runTaskPollingCycle(ctx context.Context, apiClient *client.Client, scanEngi
 			scanTask.Type = "access"
 			scanTask.Query = task.Query
 
-			matches, _ := scanEngine.ScanTask(scanTask)
+			matches, scannedFiles := scanEngine.ScanTask(scanTask)
 
 			// ADD THIS TEMPORARY DEBUG LOOP HERE:
 			log.Printf("--- START MATCH INSPECTION ---")
@@ -106,10 +106,11 @@ func runTaskPollingCycle(ctx context.Context, apiClient *client.Client, scanEngi
 			}
 
 			err := apiClient.SubmitResult(ctx, types.TaskResultPayload{
-				TaskID:   task.ID,
-				DeviceID: deviceID,
-				Status:   "completed",
-				Matches:  matches,
+				TaskID:       task.ID,
+				DeviceID:     deviceID,
+				Status:       "completed",
+				ScannedFiles: scannedFiles,
+				Matches:      matches,
 			})
 
 			// 3. CRITICAL: Catch why the backend isn't saving the completed status!
@@ -174,11 +175,11 @@ func prepareRemediationTask(ctx context.Context, apiClient *client.Client, scanE
 	}
 
 	apiClient.SubmitResult(ctx, types.TaskResultPayload{
-		TaskID:            task.ID,
-		DeviceID:          deviceID,
-		Status:            "completed",
-		ScannedFiles:      scannedFiles,
-		Matches:           matches,
+		TaskID:             task.ID,
+		DeviceID:           deviceID,
+		Status:             "completed",
+		ScannedFiles:       scannedFiles,
+		Matches:            matches,
 		DeleteReplacements: plan.deleteReplacements,
 	})
 

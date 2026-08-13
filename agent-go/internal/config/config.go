@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ FindingsCheckInterval time.Duration
 
 func Load() Config {
 	_ = godotenv.Load()
+	_ = godotenv.Load(executableDirEnvPath())
 
 	pollInterval := mustParseDuration(firstNonEmpty(os.Getenv("POLL_INTERVAL"), "30s"))
 	scanInterval := mustParseDuration(firstNonEmpty(os.Getenv("SCAN_INTERVAL"), "24h"))
@@ -66,6 +68,19 @@ FindingsCheckInterval: mustParseDuration(firstNonEmpty(os.Getenv("FINDINGS_CHECK
 	}
 }
 
+// executableDirEnvPath points at the .env shipped next to the binary, which is
+// what the installers write and what services (with no shell cwd) rely on.
+func executableDirEnvPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ".env"
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Join(filepath.Dir(exe), ".env")
+}
+ 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: dpdp-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      # Baked into every generated agent, so it must be reachable from endpoints.
+      - key: AGENT_SERVER_URL
+        sync: false
+      - key: ATLAS_URL
+        sync: false
+      - key: USE_MOCK_DB
+        value: "0"
+      - key: AGENT_SOURCE_PATH
+        value: /app/agent-go
+      - key: AGENT_BUILD_ON_DOWNLOAD
+        value: "1"

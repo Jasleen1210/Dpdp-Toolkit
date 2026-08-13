@@ -320,7 +320,7 @@ async def submit_device_result(
         "device_id": req.device_id,
         "organisation_id": org_id,
         "status": req.status,
-        "scanned_files": getattr(req, "scanned_files", 0) or len(processed_matches),
+        "scanned_files": getattr(req, "scanned_files", 0),
         "matches": processed_matches,  # 🔑 This securely drops file paths into your Mongo DB
         "delete_replacements": processed_delete_replacements,
         "received_at": now,

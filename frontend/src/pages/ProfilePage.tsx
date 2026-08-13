@@ -22,6 +22,22 @@ const API_BASE = (
   (import.meta.env.VITE_API_URL as string | undefined) || ""
 ).replace(/\/$/, "");
 
+const INSTALLER_TARGETS = [
+  { id: "windows-amd64", label: "Windows (64-bit)", platform: "windows", arch: "amd64" },
+  { id: "darwin-arm64", label: "macOS (Apple Silicon)", platform: "darwin", arch: "arm64" },
+  { id: "darwin-amd64", label: "macOS (Intel)", platform: "darwin", arch: "amd64" },
+] as const;
+ 
+function detectInstallerTarget(): string {
+  const ua = navigator.userAgent;
+  if (/Mac/i.test(ua)) {
+    // Apple Silicon Macs report as Intel in the UA, so fall back to the core
+    // count heuristic: Rosetta-era Intel Macs rarely report 8+ cores.
+    return navigator.hardwareConcurrency >= 8 ? "darwin-arm64" : "darwin-amd64";
+  }
+  return "windows-amd64";
+}
+
 async function parseJson<T>(res: Response): Promise<ApiResponse<T>> {
   const text = await res.text();
   if (!text) return {} as ApiResponse<T>;
@@ -43,6 +59,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [installerTarget, setInstallerTarget] = useState(detectInstallerTarget);
 
   const selectedOrg = useMemo(
     () => orgs.find((o) => o.id === selectedOrgId) || orgs[0] || null,
@@ -179,8 +196,12 @@ export default function ProfilePage() {
     setError("");
     setStatus("");
 
+    const target =
+      INSTALLER_TARGETS.find((t) => t.id === installerTarget) ||
+      INSTALLER_TARGETS[0];
+ 
     const res = await fetch(
-      `${API_BASE}/auth/organisations/${encodeURIComponent(selectedOrg.id)}/installer`,
+      `${API_BASE}/auth/organisations/${encodeURIComponent(selectedOrg.id)}/installer?platform=${target.platform}&arch=${target.arch}`,
       {
         method: "GET",
         headers: {
@@ -200,7 +221,7 @@ export default function ProfilePage() {
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `dpdp-agent-${selectedOrg.id}.zip`;
+    anchor.download = `dpdp-agent-${selectedOrg.id}-${target.id}.zip`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
@@ -352,7 +373,22 @@ export default function ProfilePage() {
                 Generate New Invite Code
               </Button>
             </div>
-            <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="installer-target" className="text-xs text-muted-foreground">
+                Installer for
+              </label>
+              <select
+                id="installer-target"
+                className="h-10 rounded-sm border border-border bg-background px-3 text-sm"
+                value={installerTarget}
+                onChange={(e) => setInstallerTarget(e.target.value)}
+              >
+                {INSTALLER_TARGETS.map((target) => (
+                  <option key={target.id} value={target.id}>
+                    {target.label}
+                  </option>
+                ))}
+              </select>
               <Button
                 onClick={() => void handleDownloadInstaller()}
                 disabled={loading || !selectedOrg}

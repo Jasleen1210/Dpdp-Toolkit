@@ -3,6 +3,9 @@ import hmac
 import io
 import os
 import secrets
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,13 +137,93 @@ def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _agent_binary_path() -> Path:
-    configured = os.getenv("AGENT_BINARY_PATH", "").strip()
+
+def _agent_source_root() -> Path:
+    configured = os.getenv("AGENT_SOURCE_PATH", "").strip()
+    return Path(configured) if configured else _project_root() / "agent-go"
+ 
+ 
+def _installer_script_path(name: str) -> Path:
+    return _agent_source_root() / name
+ 
+ 
+# Prebuilt binaries shipped in the installer package, per target. The first
+# existing candidate wins, so a single-platform deployment still works.
+_AGENT_BINARY_CANDIDATES = {
+    ("windows", "amd64"): ("AGENT_BINARY_PATH", ["dpdp-agent-windows-amd64.exe", "dpdp-agent.exe"]),
+    ("darwin", "amd64"): ("AGENT_BINARY_PATH_DARWIN_AMD64", ["dpdp-agent-darwin-amd64", "dpdp-agent"]),
+    ("darwin", "arm64"): ("AGENT_BINARY_PATH_DARWIN_ARM64", ["dpdp-agent-darwin-arm64"]),
+}
+ 
+ 
+def _agent_binary_path(platform: str = "windows", arch: str = "amd64") -> Path:
+    candidates = _AGENT_BINARY_CANDIDATES.get((platform, arch))
+    if not candidates:
+        raise HTTPException(status_code=400, detail=f"Unsupported target {platform}/{arch}")
+ 
+    env_var, names = candidates
+    configured = os.getenv(env_var, "").strip()
     if configured:
         return Path(configured)
-    return _project_root() / "agent-go" / "dpdp-agent.exe"
+ 
+    root = _agent_source_root()
+    for name in names:
+        candidate = root / name
+        if candidate.is_file():
+            return candidate
+    return root / names[0]
 
+def _go_toolchain() -> Optional[str]:
+    return shutil.which(os.getenv("GO_BINARY", "go"))
 
+def _build_org_agent_binary(
+    platform: str,
+    arch: str,
+    server_url: str,
+    org_id: str,
+    agent_token: str,
+) -> Optional[bytes]:
+    """Compile an agent with the org connection settings baked in via ldflags.
+ 
+    Returns None when no Go toolchain is available, so the caller can fall back
+    to the prebuilt binary plus a generated .env.
+    """
+    if os.getenv("AGENT_BUILD_ON_DOWNLOAD", "1") != "1":
+        return None
+ 
+    go_bin = _go_toolchain()
+    source_root = _agent_source_root()
+    if not go_bin or not (source_root / "go.mod").is_file():
+        return None
+ 
+    ldflags = " ".join(
+        [
+            f"-X dpdp-toolkit/agent-go/internal/config.BuiltServerURL={server_url}",
+            f"-X dpdp-toolkit/agent-go/internal/config.BuiltOrgID={org_id}",
+            f"-X dpdp-toolkit/agent-go/internal/config.BuiltAPIKey={agent_token}",
+            "-s",
+            "-w",
+        ]
+    )
+    env = {**os.environ, "GOOS": platform, "GOARCH": arch, "CGO_ENABLED": "0"}
+ 
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output = Path(tmpdir) / "dpdp-agent"
+        result = subprocess.run(
+            [go_bin, "build", "-trimpath", "-ldflags", ldflags, "-o", str(output), "./cmd/agent"],
+            cwd=str(source_root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=int(os.getenv("AGENT_BUILD_TIMEOUT", "300")),
+        )
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Agent build failed for {platform}/{arch}: {result.stderr.strip()[-500:]}",
+            )
+        return output.read_bytes()
+ 
 def _require_org_membership(user_id: str, organisation_id: str) -> dict:
     membership = org_memberships_collection.find_one(
         {"user_id": user_id, "organisation_id": organisation_id},
@@ -411,74 +494,35 @@ async def rotate_invite_code(
     return {"organisation_id": req.organisation_id, "invite_code": new_code}
 
 
-@router.get("/organisations/{organisation_id}/installer")
-async def download_org_installer(
-    organisation_id: str,
-    request: Request,
-    authorization: Optional[str] = Header(default=None),
-):
-    user = _require_session(authorization)
-    membership = _require_org_membership(user["id"], organisation_id)
-    if membership.get("role") not in {"owner", "admin"}:
-        raise HTTPException(status_code=403, detail="Only org owner/admin can download installer package")
+def _zip_write_executable(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
+    info = zipfile.ZipInfo(arcname)
+    info.external_attr = 0o755 << 16
+    info.compress_type = zipfile.ZIP_DEFLATED
+    zf.writestr(info, data)
 
-    org = organizations_collection.find_one({"id": organisation_id}, {"_id": 0})
-    if not org:
-        raise HTTPException(status_code=404, detail="Organisation not found")
-
-    api_base = str(request.base_url).rstrip("/")
-    agent_binary = _agent_binary_path()
-    if not agent_binary.exists() or not agent_binary.is_file():
+def _add_windows_installer(
+    zf: zipfile.ZipFile,
+    api_base: str,
+    org_id: str,
+    agent_token: str,
+    agent_binary: bytes,
+) -> None:
+    script_path = _installer_script_path("install.ps1")
+    if not script_path.is_file():
         raise HTTPException(
             status_code=500,
-            detail="Prebuilt agent binary not found. Set AGENT_BINARY_PATH or place dpdp-agent.exe in agent-go/.",
+            detail="install.ps1 not found. Set AGENT_SOURCE_PATH to the agent-go folder.",
         )
-
-    script_text = "\n".join(
-        [
-            "$ErrorActionPreference = 'Stop'",
-            "$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path",
-            "if (-not (Test-Path (Join-Path $scriptRoot 'dpdp-agent.exe'))) {",
-            "  Write-Error 'dpdp-agent.exe not found in the installer folder.'",
-            "  exit 1",
-            "}",
-            "Add-Type -AssemblyName System.Windows.Forms",
-            "$defaultScanPath = Join-Path $env:USERPROFILE 'Documents'",
-            "$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog",
-            "$folderBrowser.Description = 'Select folders to scan for sensitive data'",
-            "$folderBrowser.SelectedPath = $defaultScanPath",
-            "$folderBrowser.ShowNewFolderButton = $false",
-            "$result = $folderBrowser.ShowDialog()",
-            "if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
-            "  $scanPaths = @($folderBrowser.SelectedPath)",
-            "} else {",
-            "  $scanPaths = @($defaultScanPath)",
-            "}",
-            "$scanPathsValue = [string]::Join(',', $scanPaths)",
-            "$envLines = @(",
-            f"  \"SERVER_URL={api_base}\"",
-            f"  \"API_KEY={org.get('agent_token', '')}\"",
-            f"  \"ORG_ID={org['id']}\"",
-            "  \"POLL_INTERVAL=30s\"",
-            "  \"SCAN_PATHS=$scanPathsValue\"",
-            "  \"INCLUDE_EXTENSIONS=*\"",
-            "  \"MAX_FILE_SIZE_MB=5\"",
-            "  \"REGISTER_PATH=/devices/register\"",
-            "  \"TASKS_PATH=/devices/tasks\"",
-            "  \"RESULTS_PATH=/results\"",
-            ")",
-            "Set-Content -Path (Join-Path $scriptRoot '.env') -Value ($envLines -join \"`n\") -Encoding ASCII",
-            "Write-Host \"Saved scan paths: $scanPathsValue\"",
-            "Write-Host 'Launching DPDP agent for configured organisation...'",
-            "& (Join-Path $scriptRoot 'dpdp-agent.exe')",
-            "",
-        ]
-    )
-
+    
+    # install.ps1 reads the org connection settings from the environment, so the
+    # launcher injects them before handing over to the shared installer.
     bat_text = "\n".join(
         [
             "@echo off",
-            "PowerShell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0install.ps1\"",
+            f'set "SERVER_URL={api_base}"',
+            f'set "API_KEY={agent_token}"',
+            f'set "ORG_ID={org_id}"',
+            'PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"',
             "pause",
             "",
         ]
@@ -486,36 +530,160 @@ async def download_org_installer(
 
     readme_text = "\n".join(
         [
-            "DPDP Agent Installer Package",
+            "DPDP Agent Installer Package (Windows)",
             "",
             "This package is organisation scoped.",
             "",
             "Files:",
-            "- install.bat: Windows launcher that runs install.ps1",
-            "- install.ps1: bootstrap launcher script",
-            "- dpdp-agent.exe: prebuilt executable with generic config support",
+            "- install.bat: launcher that injects org settings and runs install.ps1",
+            "- install.ps1: installer that writes .env and registers the background service",
+            "- dpdp-agent.exe: the agent executable",
             "",
             "Install:",
-            "1. Unzip this package on the company endpoint.",
-            "2. Run install.bat or right-click install.ps1 and choose Run with PowerShell.",
+            "1. Unzip this package on the endpoint.",
+            "2. Run install.bat (right-click > Run as administrator to register a Windows Service;",
+            "   without admin rights it registers a per-user scheduled task instead).",
             "3. Select one folder when prompted.",
+            "",
+            "The agent then runs in the background and restarts after reboot. Manage it with:",
+            "  %LOCALAPPDATA%\\DPDPAgent\\dpdp-agent.exe status | stop | start | uninstall",
             "",
             "Security:",
             "- Keep this package internal to your organisation.",
-            "- Rotate org agent token if package is exposed.",
+            "- Rotate the org agent token if the package is exposed.",
+            "",
+        ]
+    )
+ 
+    zf.writestr("install.ps1", script_path.read_text(encoding="utf-8"))
+    zf.writestr("install.bat", bat_text)
+    zf.writestr("README.txt", readme_text)
+    zf.writestr("dpdp-agent.exe", agent_binary)
+ 
+ 
+def _add_macos_installer(
+    zf: zipfile.ZipFile,
+    api_base: str,
+    org_id: str,
+    agent_token: str,
+    agent_binary: bytes,
+) -> None:
+    script_path = _installer_script_path("install.command")
+    if not script_path.is_file():
+        raise HTTPException(
+            status_code=500,
+            detail="install.command not found. Set AGENT_SOURCE_PATH to the agent-go folder.",
+        )
+ 
+    # Same pattern as install.bat: export the org settings, then hand over to the
+    # shared installer, which prompts for the scan folder and loads the LaunchAgent.
+    launcher_text = "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            'cd "$(dirname "${BASH_SOURCE[0]}")"',
+            f'export SERVER_URL="{api_base}"',
+            f'export API_KEY="{agent_token}"',
+            f'export ORG_ID="{org_id}"',
+            'export DPDP_AGENT_BINARY="$PWD/dpdp-agent"',
+            "chmod +x ./dpdp-agent ./dpdp-install.sh",
+            "xattr -dr com.apple.quarantine . 2>/dev/null || true",
+            "codesign --force --sign - ./dpdp-agent 2>/dev/null || true",
+            'exec bash ./dpdp-install.sh',
             "",
         ]
     )
 
+    readme_text = "\n".join(
+        [
+            "DPDP Agent Installer Package (macOS)",
+            "",
+            "This package is organisation scoped.",
+            "",
+            "Files:",
+            "- install.command: launcher that injects org settings and runs the installer",
+            "- dpdp-install.sh: installer that writes .env and loads the LaunchAgent",
+            "- dpdp-agent: the agent executable",
+            "",
+            "Install:",
+            "1. Unzip this package.",
+            "2. In Terminal, run:",
+            "     cd <unzipped folder>",
+            "     chmod +x install.command dpdp-install.sh dpdp-agent",
+            "     ./install.command",
+            "   (Or right-click install.command in Finder > Open > Open.)",
+            "3. Choose the folder to scan when the picker appears.",
+            "",
+            "The agent is installed to ~/Library/Application Support/DPDPAgent and registered as a",
+            "LaunchAgent (~/Library/LaunchAgents/dpdp-agent.plist) with RunAtLoad and KeepAlive, so it",
+            "keeps running and starts again at login. Manage it with:",
+            '  "$HOME/Library/Application Support/DPDPAgent/dpdp-agent" status | stop | start | uninstall',
+            "",
+            "Gatekeeper: the binary is unsigned. The installer clears the quarantine flag and ad-hoc",
+            "signs the binary (Apple Silicon kills unsigned binaries at launch). If macOS still blocks",
+            "it, open System Settings > Privacy & Security and click 'Open Anyway', then re-run.",
+            "",
+            "Security:",
+            "- Keep this package internal to your organisation.",
+            "- Rotate the org agent token if the package is exposed.",
+            "",
+        ]
+    )
+ 
+    _zip_write_executable(zf, "install.command", launcher_text.encode("utf-8"))
+    _zip_write_executable(zf, "dpdp-install.sh", script_path.read_bytes())
+    zf.writestr("README.txt", readme_text)
+    _zip_write_executable(zf, "dpdp-agent", agent_binary)
+ 
+ 
+@router.get("/organisations/{organisation_id}/installer")
+async def download_org_installer(
+    organisation_id: str,
+    request: Request,
+    platform: str = "windows",  # "windows" or "darwin"
+    arch: str = "amd64",  # "amd64" or "arm64" (Apple Silicon)
+    authorization: Optional[str] = Header(default=None),
+):
+    user = _require_session(authorization)
+    # Any member of the org may download the installer: every enrolled device has
+    # to run the agent for the org to see it.
+    _require_org_membership(user["id"], organisation_id)
+ 
+    org = organizations_collection.find_one({"id": organisation_id}, {"_id": 0})
+    if not org:
+        raise HTTPException(status_code=404, detail="Organisation not found")
+ 
+    if platform not in {"windows", "darwin"}:
+        raise HTTPException(status_code=400, detail="Unsupported platform")
+ 
+    api_base = os.getenv("AGENT_SERVER_URL", "").strip() or str(request.base_url).rstrip("/")
+    agent_token = org.get("agent_token", "")
+    
+    # Preferred path: compile per organisation so SERVER_URL/API_KEY/ORG_ID are
+    # baked into the binary; the prebuilt binary + .env is the fallback.
+    agent_bytes = _build_org_agent_binary(platform, arch, api_base, org["id"], agent_token)
+    if agent_bytes is None:
+        binary_path = _agent_binary_path(platform, arch)
+        if not binary_path.is_file():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    f"Prebuilt {platform}/{arch} agent binary not found at {binary_path.name}, "
+                    "and no Go toolchain is available to build one. Run agent-go/build.sh or "
+                    "set the matching AGENT_BINARY_PATH* variable."
+                ),
+            )
+        agent_bytes = binary_path.read_bytes()
+ 
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("install.ps1", script_text)
-        zf.writestr("install.bat", bat_text)
-        zf.writestr("README.txt", readme_text)
-
-        zf.write(agent_binary, arcname="dpdp-agent.exe")
+        if platform == "windows":
+            _add_windows_installer(zf, api_base, org["id"], agent_token, agent_bytes)
+        else:
+            _add_macos_installer(zf, api_base, org["id"], agent_token, agent_bytes)
 
     zip_buffer.seek(0)
-    filename = f"dpdp-agent-{organisation_id}.zip"
+    suffix = "windows" if platform == "windows" else f"macos-{arch}"
+    filename = f"dpdp-agent-{organisation_id}-{suffix}.zip"
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     return StreamingResponse(zip_buffer, media_type="application/zip", headers=headers)
