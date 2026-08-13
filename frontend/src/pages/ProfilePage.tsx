@@ -316,63 +316,75 @@ export default function ProfilePage() {
               value={selectedOrg?.id || ""}
               onChange={(e) => setSelectedOrgId(e.target.value)}
             >
-              {orgs.map((org) => (
-                <option key={org.id} value={org.id}>
-                  {org.name} ({org.role || "member"})
-                </option>
-              ))}
+              {orgs.map((org) => {
+                const role = org.role || "member";
+                const displayRole = role.charAt(0).toUpperCase() + role.slice(1);
+                return (
+                  <option key={org.id} value={org.id}>
+                    {org.name} ({displayRole})
+                  </option>
+                );
+              })}
             </select>
 
             {selectedOrg ? (
               <div className="grid gap-2 text-sm">
-                <div className="text-muted-foreground">
-                  Organisation ID:{" "}
-                  <span className="text-foreground break-all">
-                    {selectedOrg.id}
-                  </span>
-                </div>
+                {selectedOrg.role !== "member" && (
+                  <div className="text-muted-foreground">
+                    Organisation ID:{" "}
+                    <span className="text-foreground break-all">
+                      {selectedOrg.id}
+                    </span>
+                  </div>
+                )}
                 <div className="text-muted-foreground">
                   Role:{" "}
-                  <span className="text-foreground">
+                  <span className="text-foreground capitalize">
                     {selectedOrg.role || "member"}
                   </span>
                 </div>
-                <div className="text-muted-foreground">
-                  Invite Code (one-time style):{" "}
-                  <span className="text-foreground">
-                    {selectedOrg.invite_code || "-"}
-                  </span>
-                </div>
-                <div className="text-muted-foreground">
-                  Device Enrollment Code:{" "}
-                  <span className="text-foreground">
-                    {selectedOrg.device_enrollment_code || "-"}
-                  </span>
-                </div>
-                <div className="text-muted-foreground">
-                  Admin API Key:{" "}
-                  <span className="text-foreground">
-                    {selectedOrg.admin_api_key ? "********" : "-"}
-                  </span>
-                </div>
-                <div className="text-muted-foreground">
-                  Agent Token:{" "}
-                  <span className="text-foreground">
-                    {selectedOrg.agent_token ? "********" : "-"}
-                  </span>
-                </div>
+                {selectedOrg.role !== "member" && (
+                  <>
+                    <div className="text-muted-foreground">
+                      Invite Code (one-time style):{" "}
+                      <span className="text-foreground">
+                        {selectedOrg.invite_code || "-"}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      Device Enrollment Code:{" "}
+                      <span className="text-foreground">
+                        {selectedOrg.device_enrollment_code || "-"}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      Admin API Key:{" "}
+                      <span className="text-foreground">
+                        {selectedOrg.admin_api_key ? "********" : "-"}
+                      </span>
+                    </div>
+                    <div className="text-muted-foreground">
+                      Agent Token:{" "}
+                      <span className="text-foreground">
+                        {selectedOrg.agent_token ? "********" : "-"}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
             ) : null}
 
-            <div>
-              <Button
-                variant="outline"
-                onClick={() => void handleRotateInviteCode()}
-                disabled={loading || !selectedOrg}
-              >
-                Generate New Invite Code
-              </Button>
-            </div>
+            {selectedOrg?.role !== "member" && (
+              <div>
+                <Button
+                  variant="outline"
+                  onClick={() => void handleRotateInviteCode()}
+                  disabled={loading || !selectedOrg}
+                >
+                  Generate New Invite Code
+                </Button>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <label htmlFor="installer-target" className="text-xs text-muted-foreground">
                 Installer for

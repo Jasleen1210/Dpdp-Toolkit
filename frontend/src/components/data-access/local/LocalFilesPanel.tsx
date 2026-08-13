@@ -240,10 +240,10 @@ export default function LocalFilesPanel() {
         <div className="flex items-center gap-2 border-b border-border pb-2">
           {(["register", "new-task"] as const).map((tab) => (
             <button key={tab}
-              className={`px-3 py-1.5 text-[12px] rounded-sm border ${
+              className={`px-6 py-2 text-sm font-medium rounded-md border transition-colors shadow-sm ${
                 activeTab === tab
-                  ? "border-primary/40 bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:text-foreground"
+                  ? "border-primary bg-primary/15 text-primary"
+                  : "border-border/80 bg-background text-muted-foreground hover:bg-muted/50 hover:text-foreground"
               }`}
               onClick={() => setActiveTab(tab)}
             >
