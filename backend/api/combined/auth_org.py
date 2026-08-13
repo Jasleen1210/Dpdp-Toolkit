@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import hmac
 import io
+import logging
 import os
 import secrets
 import shutil
@@ -205,12 +207,31 @@ def _build_org_agent_binary(
             "-w",
         ]
     )
-    env = {**os.environ, "GOOS": platform, "GOARCH": arch, "CGO_ENABLED": "0"}
+    # Small instances (Render free tier: 0.1 CPU / 512 MB) get OOM-killed by a
+    # parallel build, so keep the compiler single-threaded.
+    env = {
+        **os.environ,
+        "GOOS": platform,
+        "GOARCH": arch,
+        "CGO_ENABLED": "0",
+        "GOMAXPROCS": os.getenv("AGENT_BUILD_GOMAXPROCS", "1"),
+    }
  
     with tempfile.TemporaryDirectory() as tmpdir:
         output = Path(tmpdir) / "dpdp-agent"
         result = subprocess.run(
-            [go_bin, "build", "-trimpath", "-ldflags", ldflags, "-o", str(output), "./cmd/agent"],
+            [
+                go_bin,
+                "build",
+                "-p",
+                env["GOMAXPROCS"],
+                "-trimpath",
+                "-ldflags",
+                ldflags,
+                "-o",
+                str(output),
+                "./cmd/agent",
+            ],
             cwd=str(source_root),
             env=env,
             capture_output=True,
@@ -223,6 +244,18 @@ def _build_org_agent_binary(
                 detail=f"Agent build failed for {platform}/{arch}: {result.stderr.strip()[-500:]}",
             )
         return output.read_bytes()
+
+async def _build_org_agent_binary_async(*args) -> Optional[bytes]:
+    """Run the build off the event loop; a blocking build starves health checks.
+ 
+    A failed or too-slow build degrades to the prebuilt binary rather than the
+    whole download failing.
+    """
+    try:
+        return await asyncio.to_thread(_build_org_agent_binary, *args)
+    except (subprocess.SubprocessError, OSError, HTTPException) as exc:
+        logging.warning("per-org agent build failed, using prebuilt binary: %s", exc)
+        return None
  
 def _require_org_membership(user_id: str, organisation_id: str) -> dict:
     membership = org_memberships_collection.find_one(
@@ -661,7 +694,9 @@ async def download_org_installer(
     
     # Preferred path: compile per organisation so SERVER_URL/API_KEY/ORG_ID are
     # baked into the binary; the prebuilt binary + .env is the fallback.
-    agent_bytes = _build_org_agent_binary(platform, arch, api_base, org["id"], agent_token)
+    agent_bytes = await _build_org_agent_binary_async(
+        platform, arch, api_base, org["id"], agent_token
+    )
     if agent_bytes is None:
         binary_path = _agent_binary_path(platform, arch)
         if not binary_path.is_file():
