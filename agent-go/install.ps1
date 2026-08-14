@@ -74,9 +74,16 @@ function Register-ScheduledTaskFallback {
   $trigger = New-ScheduledTaskTrigger -AtLogOn
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
-  Start-ScheduledTask -TaskName $taskName
-  Write-Host 'Scheduled task "DPDPAgent" registered and started.'
+  try {
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force -ErrorAction Stop | Out-Null
+    Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Write-Host 'Scheduled task "DPDPAgent" registered and started.'
+  } catch {
+    Write-Warning "Failed to register the background task: $($_.Exception.Message)"
+    Write-Warning "To fix this, please right-click PowerShell, select 'Run as Administrator', and run this script again."
+    Write-Host "For now, you can manually start the agent by running:" -ForegroundColor Yellow
+    Write-Host "  & `"$agentExe`" run" -ForegroundColor Cyan
+  }
 }
  
 # Registers a real Windows Service (auto-start, restart on failure) when we have
