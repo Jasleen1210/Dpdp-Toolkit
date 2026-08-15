@@ -12,12 +12,8 @@ from backend.services.persistence.mongo import (
     data_source_approval_requests as device_approval_requests_collection,
     data_sources as devices_collection,
     pii_classifications as device_results_collection,
+    users as users_collection
 )
-
-try:
-    from services.combined.db import users_collection
-except ImportError:
-    from backend.services.combined.db import users_collection
 
 router = APIRouter()
 
