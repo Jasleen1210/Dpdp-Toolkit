@@ -34,7 +34,10 @@ export interface DSRRequest {
   status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval";
   created: string;
   sla_remaining: string;
-  handler: "auto" | "manual";
+  handler: "auto" | "manual" | string;
+  devices?: string[];
+  tasks_count?: number;
+  source_types?: string[];
 }
 
 export interface Vendor {

@@ -1,12 +1,31 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import { approveDevice, createRemediationTask, getMyOrganisations, listDeviceApprovalRequests, listDeviceDailyScanReports, listOrganisationDevices, type CreateTaskRequest, type Device, type DeviceApprovalRequestItem, type DeviceDailyScanReportItem, type OrganisationInfo } from "../../../api/localAgent";
+import {
+  approveDevice,
+  createRemediationTask,
+  getMyOrganisations,
+  getTaskGroupResults,
+  listDeviceApprovalRequests,
+  listDeviceDailyScanReports,
+  listOrganisationDevices,
+  listTasks,
+  type CreateTaskRequest,
+  type Device,
+  type DeviceApprovalRequestItem,
+  type DeviceDailyScanReportItem,
+  type OrganisationInfo,
+  type TaskGroupResultResponse,
+  type TaskHistoryItem,
+} from "../../../api/localAgent";
 import { Button } from "@/components/ui/button";
 import { useAppDispatch, useAppSelector } from "@/redux/hooks";
 import { setOrganisations } from "@/redux/authSlice";
 import { DeviceCard } from "./components/DeviceCard";
 import { OrgDetailsPanel } from "./components/OrgDetailsPanel";
 import { TaskForm } from "./components/TaskForm";
+import { TaskCard } from "./components/TaskCard";
+
+type ActiveTab = "register" | "new-task";
 
 export default function LocalFilesPanel() {
   const dispatch = useAppDispatch();

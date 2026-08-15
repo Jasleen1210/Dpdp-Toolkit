@@ -29,23 +29,36 @@ from backend.services.persistence.mongo import (
 router = APIRouter()
 
 
-def _create_data_subject_request(org_id: str, request_type: str, identifier: str, now, expires_at, submitted_via: str = "api") -> str:
+def _create_data_subject_request(
+    org_id: str,
+    request_type: str,
+    identifier: str,
+    now,
+    expires_at,
+    submitted_via: str = "api",
+    source_types: Optional[list] = None,
+) -> str:
     """Create the master request once; individual sources receive request_tasks."""
     request_id = str(uuid4())
-    canonical_type = {"update": "correction", "delete": "erasure"}.get(request_type, request_type)
+    canonical_type = {"update": "correction", "delete": "erasure"}.get(request_type.lower(), request_type.lower())
     data_subject_requests.insert_one({
         "id": request_id,
         "org_id": org_id,
+        "organisation_id": org_id,
         "request_type": canonical_type,
-        "data_principal": {"identifier_hash": identifier.lower()},
+        "data_principal": {
+            "identifier_hash": identifier.lower(),
+            "email": identifier if "@" in identifier else "",
+        },
         "verification_status": "verified",
         "status": "in_progress",
         "sla_due_at": expires_at,
         "submitted_via": submitted_via,
+        "source_types": source_types or ["local_device"],
         "created_at": now,
         "updated_at": now,
         # Transitional fields consumed by existing agent/API clients.
-        "type": request_type,
+        "type": request_type.upper(),
         "identifier": identifier,
     })
     return request_id
@@ -66,16 +79,28 @@ def _iso(dt):
 
 
 def _get_registered_device_or_fail(device_id: str, org_id: str):
-    device = devices_collection.find_one(
-        {"device_id": device_id, "organisation_id": org_id},
-        {"_id": 0},
-    )
+    device = devices_collection.find_one({
+        "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+        "source_type": "local_device",
+        "source_key": device_id,
+    }, {"_id": 0})
     if not device:
-        raise HTTPException(status_code=404, detail="Device not registered")
+        # Fallback to device_id key
+        device = devices_collection.find_one({
+            "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+            "device_id": device_id,
+        }, {"_id": 0})
+    if not device:
+        raise HTTPException(
+            status_code=404,
+            detail="Device not registered"
+        )
     if not device.get("approved", False):
-        raise HTTPException(status_code=403, detail="Device is not approved")
+        raise HTTPException(
+            status_code=403,
+            detail="Device is not approved"
+        )
     return device
-
 
 @router.post("/tasks")
 async def create_distributed_task(
@@ -87,8 +112,9 @@ async def create_distributed_task(
     org_id = _resolve_org_id(x_org_id, organisation_id)
     _validate_admin_key(x_admin_key, org_id)
 
-    expires_at = utc_now() + timedelta(hours=max(1, min(req.expires_in_hours, 24)))
-    device_filter = {"organisation_id": org_id, "approved": True}
+    now = utc_now()
+    expires_at = now + timedelta(hours=max(1, min(req.expires_in_hours, 24)))
+    device_filter = {"$or": [{"org_id": org_id}, {"organisation_id": org_id}], "approved": True}
     if req.device_ids:
         device_filter["device_id"] = {"$in": req.device_ids}
 
@@ -102,27 +128,50 @@ async def create_distributed_task(
         raise HTTPException(status_code=400, detail=detail)
 
     task_group_id = str(uuid4())
-    request_id = _create_data_subject_request(org_id, "access", req.query, utc_now(), expires_at)
+    request_id = _create_data_subject_request(
+        org_id=org_id,
+        request_type="access",
+        identifier=req.query,
+        now=now,
+        expires_at=expires_at,
+        submitted_via="api",
+        source_types=["local_device"],
+    )
     created = []
     for device in target_devices:
         task_id = str(uuid4())
+        data_source_id = device.get("id") or device["device_id"]
         device_tasks_collection.insert_one({
             "id": task_id,
             "request_id": request_id,
-            "data_source_id": device.get("id", device["device_id"]),
+            "data_source_id": data_source_id,
             "org_id": org_id,
             "task_group_id": task_group_id,
             "organisation_id": org_id,
             "device_id": device["device_id"],
+            "source_type": "local_device",
             "query": req.query,
+            "type": "access",
             "status": "pending",
-            "created_at": utc_now(),
+            "created_at": now,
             "expires_at": expires_at,
+            "updated_at": now,
             "completed_at": None,
         })
-        created.append({"id": task_id, "device_id": device["device_id"], "expires_at": expires_at})
+        created.append({
+            "id": task_id,
+            "request_id": request_id,
+            "device_id": device["device_id"],
+            "expires_at": expires_at,
+        })
 
-    return {"task_group_id": task_group_id, "tasks_created": len(created), "tasks": created}
+    return {
+        "status": "tasks_created",
+        "request_id": request_id,
+        "task_group_id": task_group_id,
+        "tasks_created": len(created),
+        "tasks": created,
+    }
 
 
 @router.get("/tasks")
@@ -137,7 +186,7 @@ async def list_distributed_tasks(
     org_id = _resolve_org_id(x_org_id, organisation_id)
     _validate_admin_key(x_admin_key, org_id)
 
-    query_filter = {"organisation_id": org_id}
+    query_filter = {"$or": [{"org_id": org_id}, {"organisation_id": org_id}]}
     if device_id:
         query_filter["device_id"] = device_id
     if status:
@@ -151,11 +200,27 @@ async def list_distributed_tasks(
     if not tasks:
         return {"tasks": []}
 
-    results = list(device_results_collection.find(
-        {"task_id": {"$in": [t["id"] for t in tasks]}, "organisation_id": org_id},
-        {"_id": 0},
-    ))
-    result_map = {r["task_id"]: r for r in results}
+    task_ids = [t["id"] for t in tasks]
+    results = list(
+        device_results_collection.find(
+            {
+                "$or": [
+                    {"request_task_id": {"$in": task_ids}},
+                    {"task_id": {"$in": task_ids}},
+                ],
+                "$or": [
+                    {"org_id": org_id},
+                    {"organisation_id": org_id},
+                ],
+            },
+            {"_id": 0},
+        )
+    )
+    result_map = {}
+    for r in results:
+        k = r.get("request_task_id") or r.get("task_id")
+        if k:
+            result_map[k] = r
 
     merged = []
     for task in tasks:
@@ -164,6 +229,7 @@ async def list_distributed_tasks(
         delete_replacements = result.get("delete_replacements", []) if result else []
         merged.append({
             "id": task["id"],
+            "request_id": task.get("request_id"),
             "task_group_id": task.get("task_group_id"),
             "device_id": task.get("device_id"),
             "type": task.get("type", "access"),
@@ -198,7 +264,7 @@ async def get_device_tasks(
     now = utc_now()
 
     devices_collection.update_one(
-        {"device_id": device_id, "organisation_id": org_id},
+        {"device_id": device_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
         {"$set": {"last_seen": now, "updated_at": now}},
     )
 
@@ -206,7 +272,7 @@ async def get_device_tasks(
         device_tasks_collection.find(
             {
                 "device_id": device_id,
-                "organisation_id": org_id,
+                "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
                 "status": "pending",
                 "expires_at": {"$gt": now},
             },
@@ -225,7 +291,7 @@ async def get_device_tasks(
 
     updates_query = {
         "device_id": device_id,
-        "organisation_id": org_id,
+        "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
     }
 
     since_dt = _parse_iso_datetime(since)
@@ -290,7 +356,7 @@ async def submit_device_result(
 
     # 2. Locate the designated task matching this device execution sequence
     task = device_tasks_collection.find_one(
-        {"id": req.task_id, "device_id": req.device_id, "organisation_id": org_id},
+        {"id": req.task_id, "device_id": req.device_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
         {"_id": 0},
     )
     if not task:
@@ -304,7 +370,7 @@ async def submit_device_result(
     now = utc_now()
     if expires_at and now > expires_at:
         device_tasks_collection.update_one(
-            {"id": req.task_id, "device_id": req.device_id, "organisation_id": org_id},
+            {"id": req.task_id, "device_id": req.device_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
             {"$set": {"status": "expired", "updated_at": now}},
         )
         raise HTTPException(status_code=410, detail="Task expired")
@@ -330,22 +396,30 @@ async def submit_device_result(
             else:
                 processed_delete_replacements.append(dict(replacement))
 
-    # 5. Insert scan metadata into the device results tracking collection
-    device_results_collection.insert_one({
+    # 5. Insert scan metadata into the canonical pii_classifications collection
+    request_id = task.get("request_id")
+    data_source_id = task.get("data_source_id", req.device_id)
+
+    result_doc = {
         "id": str(uuid4()),
         "org_id": org_id,
-        "data_source_id": task.get("data_source_id", req.device_id),
-        "request_task_id": task.get("id"),
-        "source_type": "local_device",
-        "task_id": req.task_id,
-        "device_id": req.device_id,
         "organisation_id": org_id,
+        "data_source_id": data_source_id,
+        "request_task_id": task.get("id", req.task_id),
+        "task_id": req.task_id,  # Compatibility field
+        "request_id": request_id,
+        "source_type": task.get("source_type", "local_device"),
+        "device_id": req.device_id,
         "status": req.status,
         "scanned_files": getattr(req, "scanned_files", 0),
-        "matches": processed_matches,  # 🔑 This securely drops file paths into your Mongo DB
+        "matches": processed_matches,  # Securely drops file paths and matches into Mongo
         "delete_replacements": processed_delete_replacements,
+        "classified_at": now,
         "received_at": now,
-    })
+        "created_at": now,
+        "updated_at": now,
+    }
+    device_results_collection.insert_one(result_doc)
 
     if processed_delete_replacements:
         for replacement in processed_delete_replacements:
@@ -376,17 +450,31 @@ async def submit_device_result(
 
     # 6. Finalize task workflow transition to completed status
     device_tasks_collection.update_one(
-        {"id": req.task_id, "device_id": req.device_id, "organisation_id": org_id},
+        {"id": req.task_id, "device_id": req.device_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
         {"$set": {
             "status": "completed", 
             "completed_at": now, 
-            "updated_at": now
+            "updated_at": now,
+            "result_summary": {
+                "records_found": len(processed_matches),
+                "locations": [m.get("file") for m in processed_matches if m.get("file")],
+            },
+            "action_taken": "none" if task.get("type", "access") == "access" else task.get("type"),
         }},
     )
-    device_tasks_collection.update_one(
-        {"id": req.task_id, "organisation_id": org_id},
-        {"$set": {"result_summary": {"records_found": len(processed_matches), "locations": [m.get("file") for m in processed_matches if m.get("file")]}, "action_taken": "none" if task.get("type", "access") == "access" else task.get("type"), "updated_at": now}},
-    )
+
+    # 7. Update data_subject_requests if all tasks completed
+    if request_id:
+        pending_count = device_tasks_collection.count_documents({
+            "request_id": request_id,
+            "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+            "status": {"$in": ["pending", "in_progress"]},
+        })
+        if pending_count == 0:
+            data_subject_requests.update_one(
+                {"id": request_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
+                {"$set": {"status": "completed", "updated_at": now}},
+            )
     
     return {"message": "result accepted", "task_id": req.task_id}
 
@@ -429,13 +517,24 @@ async def get_task_group_results(
     _validate_admin_key(x_admin_key, org_id)
 
     tasks = list(device_tasks_collection.find(
-        {"task_group_id": task_group_id, "organisation_id": org_id}, {"_id": 0}
+        {"task_group_id": task_group_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
+        {"_id": 0}
     ))
     if not tasks:
         raise HTTPException(status_code=404, detail="Task group not found")
 
+    task_ids = [t["id"] for t in tasks]
     results = list(device_results_collection.find(
-        {"task_id": {"$in": [t["id"] for t in tasks]}, "organisation_id": org_id},
+        {
+            "$or": [
+                {"request_task_id": {"$in": task_ids}},
+                {"task_id": {"$in": task_ids}},
+            ],
+            "$or": [
+                {"org_id": org_id},
+                {"organisation_id": org_id},
+            ],
+        },
         {"_id": 0},
     ))
     return {"task_group_id": task_group_id, "tasks": tasks, "results": results}
@@ -519,8 +618,13 @@ async def create_modification_task(
 ):
     org_id = _resolve_org_id(x_org_id, organisation_id)
     _validate_admin_key(x_admin_key, org_id)
- 
+
     now = utc_now()
+    expires_at = now + timedelta(days=1)
+
+    # ---------------------------------------------------------
+    # 1. Validate action + build query
+    # ---------------------------------------------------------
 
     if payload.action_type == "update":
         if not payload.new_value:
@@ -528,30 +632,94 @@ async def create_modification_task(
                 status_code=400,
                 detail="Missing 'new_value' for update task"
             )
+
         packed_query = f"{payload.target_value}::{payload.new_value}"
 
-    elif payload.action_type == "delete":
+    elif payload.action_type in {"delete", "access"}:
         packed_query = payload.target_value
 
-    elif payload.action_type == "access":
-        packed_query = payload.target_value
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported action_type: {payload.action_type}"
+        )
+
+    # ---------------------------------------------------------
+    # 2. Find the registered canonical data source
+    # ---------------------------------------------------------
+
+    device = _get_registered_device_or_fail(
+        payload.device_id,
+        org_id
+    )
+
+    data_source_id = device.get("id")
+
+    if not data_source_id:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Registered device '{payload.device_id}' "
+                "does not have a canonical data source id"
+            )
+        )
+
+    # ---------------------------------------------------------
+    # 3. Create master data-subject request
+    # ---------------------------------------------------------
+
+    request_id = _create_data_subject_request(
+        org_id=org_id,
+        request_type=payload.action_type,
+        identifier=payload.target_value,
+        now=now,
+        expires_at=expires_at,
+        submitted_via="api",
+    )
+
+    # ---------------------------------------------------------
+    # 4. Create source-specific task
+    # ---------------------------------------------------------
+
+    task_id = str(uuid4())
+    task_group_id = str(uuid4())
 
     task_doc = {
-        "id": str(uuid4()),
-        "task_group_id": str(uuid4()),
-        "organisation_id": org_id,
+        "id": task_id,
+
+        # Canonical relationship fields
+        "request_id": request_id,
+        "data_source_id": data_source_id,
+
+        "task_group_id": task_group_id,
+
         "org_id": org_id,
+        "organisation_id": org_id,
+
         "device_id": payload.device_id,
+
+        "source_type": "local_device",
+
         "query": packed_query,
         "status": "pending",
         "type": payload.action_type,
-        "created_at": now,
-        "expires_at": now + timedelta(days=1),
-        "updated_at": now,
-    }
-    device_tasks_collection.insert_one(task_doc)
-    return {"status": "task_created", "task_id": task_doc["id"]}
 
+        "created_at": now,
+        "expires_at": expires_at,
+        "updated_at": now,
+        "completed_at": None,
+    }
+
+    device_tasks_collection.insert_one(task_doc)
+
+    return {
+        "status": "task_created",
+        "task_id": task_id,
+        "request_id": request_id,
+        "task_group_id": task_group_id,
+        "data_source_id": data_source_id,
+    }
+    
 @router.get("/vulnerabilities/{device_id}")
 async def get_device_vulnerabilities(
     device_id: str,

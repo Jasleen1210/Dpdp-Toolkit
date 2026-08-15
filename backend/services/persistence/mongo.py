@@ -46,20 +46,31 @@ redaction_records = db["redaction_records"]
 
 def ensure_indexes() -> None:
     """Create idempotent indexes used by the production query paths."""
-    organizations.create_index("id", unique=True)
-    users.create_index("email", unique=True)
-    org_memberships.create_index([("user_id", 1), ("organisation_id", 1)], unique=True)
-    sessions.create_index("token", unique=True)
-    data_sources.create_index([("org_id", 1), ("source_type", 1), ("source_key", 1)], unique=True)
-    data_source_approval_requests.create_index([("org_id", 1), ("data_source_id", 1), ("status", 1)])
-    scan_jobs.create_index([("org_id", 1), ("data_source_id", 1), ("started_at", -1)])
-    pii_classifications.create_index([("org_id", 1), ("data_source_id", 1), ("location", 1)])
-    data_subject_requests.create_index([("org_id", 1), ("created_at", -1)])
-    data_subject_requests.create_index("id", unique=True)
-    request_tasks.create_index([("request_id", 1), ("data_source_id", 1)], unique=True)
-    request_tasks.create_index([("org_id", 1), ("status", 1), ("created_at", -1)])
-    data_source_vulnerabilities.create_index([("org_id", 1), ("data_source_id", 1)], unique=True)
-    audit_logs.create_index([("org_id", 1), ("created_at", -1)])
+    indexes = [
+        (organizations, ("id",), {"unique": True}),
+        (users, ("email",), {"unique": True}),
+        (org_memberships, ([("user_id", 1), ("organisation_id", 1)],), {"unique": True}),
+        (sessions, ("token",), {"unique": True}),
+        (data_sources, ([("org_id", 1), ("source_type", 1), ("source_key", 1)],), {"unique": True}),
+        (data_source_approval_requests, ([("org_id", 1), ("data_source_id", 1), ("status", 1)],), {}),
+        (scan_jobs, ([("org_id", 1), ("data_source_id", 1), ("started_at", -1)],), {}),
+        (pii_classifications, ([("org_id", 1), ("data_source_id", 1), ("location", 1)],), {}),
+        (pii_classifications, ([("org_id", 1), ("request_task_id", 1)],), {}),
+        (pii_classifications, ([("org_id", 1), ("task_id", 1)],), {}),
+        (pii_classifications, ([("org_id", 1), ("request_id", 1)],), {}),
+        (data_subject_requests, ([("org_id", 1), ("created_at", -1)],), {}),
+        (data_subject_requests, ("id",), {"unique": True}),
+        (request_tasks, ("id",), {}),
+        (request_tasks, ([("request_id", 1), ("data_source_id", 1)],), {"unique": True}),
+        (request_tasks, ([("org_id", 1), ("status", 1), ("created_at", -1)],), {}),
+        (data_source_vulnerabilities, ([("org_id", 1), ("data_source_id", 1)],), {"unique": True}),
+        (audit_logs, ([("org_id", 1), ("created_at", -1)],), {}),
+    ]
+    for coll, args, kwargs in indexes:
+        try:
+            coll.create_index(*args, **kwargs)
+        except Exception:
+            pass
 
 
 ensure_indexes()

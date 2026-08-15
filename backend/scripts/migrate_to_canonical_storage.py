@@ -89,7 +89,25 @@ def migrate_local(apply: bool, counts: dict):
         upsert(request_tasks, {"request_id": request_id, "data_source_id": task["data_source_id"]}, task, apply, counts, "request_tasks")
     for result in source["device_results"].find({}, {"_id": 0}):
         org_id, device_id = result.get("organisation_id", DEFAULT_ORG_ID), result.get("device_id")
-        result.update({"id": result.get("id") or str(uuid4()), "org_id": org_id, "data_source_id": source_ids.get((org_id, device_id), device_id), "source_type": "local_device", "location": result.get("task_id") or result.get("result_scope", "standalone"), "classified_at": result.get("updated_at", result.get("received_at", now()))})
+        task_id = result.get("task_id")
+        task = None
+        if task_id:
+            task = request_tasks.find_one({"id": task_id, "org_id": org_id}, {"_id": 0, "request_id": 1, "data_source_id": 1})
+        request_id = task.get("request_id") if task else result.get("request_id")
+        data_source_id = (task.get("data_source_id") if task else None) or source_ids.get((org_id, device_id), device_id)
+        result.update({
+            "id": result.get("id") or str(uuid4()),
+            "org_id": org_id,
+            "organisation_id": org_id,
+            "data_source_id": data_source_id,
+            "request_task_id": task_id,
+            "task_id": task_id,
+            "request_id": request_id,
+            "source_type": "local_device",
+            "device_id": device_id,
+            "location": task_id or result.get("result_scope", "standalone"),
+            "classified_at": result.get("updated_at", result.get("received_at", now())),
+        })
         upsert(pii_classifications, {"org_id": org_id, "data_source_id": result["data_source_id"], "location": result["location"]}, result, apply, counts, "pii_classifications")
     for log in source["device_cron_logs"].find({}, {"_id": 0}):
         org_id, device_id = log.get("organisation_id", DEFAULT_ORG_ID), log.get("device_id")

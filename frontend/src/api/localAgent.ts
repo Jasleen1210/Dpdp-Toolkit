@@ -102,6 +102,7 @@ export type TaskGroupResultResponse = {
 
 export type TaskHistoryItem = {
   id: string;
+  request_id?: string;
   task_group_id?: string;
   device_id?: string;
   type?: "access" | "update" | "delete" | string;

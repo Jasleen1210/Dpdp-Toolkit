@@ -13,6 +13,7 @@ from backend.services.persistence.mongo import (
     data_sources,
     data_subject_requests,
     pii_classifications,
+    request_tasks,
     scan_jobs,
 )
 from backend.services.pii_detection import detect_pii_full
@@ -75,19 +76,61 @@ def build_match_summary(matches):
 
 @router.get("/requests")
 def get_requests():
-    data = list(data_subject_requests.find({"org_id": _cloud_org_id()}, {"_id": 0}).sort("created_at", -1))
+    org_id = _cloud_org_id()
+    data = list(data_subject_requests.find({"$or": [{"org_id": org_id}, {"organisation_id": org_id}]}, {"_id": 0}).sort("created_at", -1))
 
     formatted = []
 
     for r in data:
+        r_id = r.get("id")
+        if not r_id:
+            continue
+        tasks = list(request_tasks.find({"request_id": r_id}, {"_id": 0}))
+        device_ids = [t.get("device_id") for t in tasks if t.get("device_id")]
+
+        subject = (
+            r.get("identifier")
+            or (r.get("data_principal", {}) or {}).get("identifier_hash")
+            or (r.get("data_principal", {}) or {}).get("email")
+            or "Unknown"
+        )
+
+        raw_type = (r.get("type") or r.get("request_type") or "access").lower()
+        type_mapping = {"correction": "update", "erasure": "delete"}
+        display_type = type_mapping.get(raw_type, raw_type)
+
+        status = r.get("status", "pending").lower()
+        if tasks:
+            all_done = all(t.get("status") == "completed" for t in tasks)
+            if all_done and status not in ("awaiting_approval", "rejected"):
+                status = "completed"
+            elif any(t.get("status") == "in_progress" for t in tasks):
+                status = "in_progress"
+
+        created_val = r.get("created_at")
+        created_str = (
+            created_val.strftime("%Y-%m-%d")
+            if hasattr(created_val, "strftime")
+            else str(created_val)[:10] if created_val else "-"
+        )
+
+        handler_str = "auto-system"
+        if device_ids:
+            handler_str = f"local ({', '.join(device_ids)})"
+        elif r.get("source_types"):
+            handler_str = ", ".join(r.get("source_types", []))
+
         formatted.append({
-            "id": r["id"],
-            "type": r.get("type", r.get("request_type", "access")).lower(),
-            "subject": r.get("identifier", r.get("data_principal", {}).get("email", "")),
-            "status": r["status"].lower(),
+            "id": r_id,
+            "type": display_type,
+            "subject": subject,
+            "status": status,
             "sla_remaining": "48h",
-            "handler": "auto-system",
-            "created": r["created_at"].strftime("%Y-%m-%d") if hasattr(r["created_at"], "strftime") else str(r["created_at"])[:10]
+            "handler": handler_str,
+            "created": created_str,
+            "devices": device_ids,
+            "tasks_count": len(tasks),
+            "source_types": r.get("source_types", ["local_device" if device_ids else "cloud_storage"]),
         })
 
     return {"requests": formatted}
