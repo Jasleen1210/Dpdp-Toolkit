@@ -517,6 +517,9 @@ async def create_modification_task(
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
 ):
+    org_id = _resolve_org_id(x_org_id, organisation_id)
+    _validate_admin_key(x_admin_key, org_id)
+ 
     now = utc_now()
 
     if payload.action_type == "update":
@@ -536,7 +539,8 @@ async def create_modification_task(
     task_doc = {
         "id": str(uuid4()),
         "task_group_id": str(uuid4()),
-        "organisation_id": "25a30439-8273-4c11-abbf-bb0a5bb689d1",
+        "organisation_id": org_id,
+        "org_id": org_id,
         "device_id": payload.device_id,
         "query": packed_query,
         "status": "pending",
