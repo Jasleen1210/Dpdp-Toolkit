@@ -1,12 +1,12 @@
 # This part of the code combines mock_cloud_service and s3_service to provide a unified interface for cloud operations. It allows the application to switch between mock (GCP and Azure) and real S3 services
-from backend.services.cloud.s3_service import (
+from backend.services.cloud_storage.s3_service import (
     list_s3_objects,
     read_s3_file,
     write_s3_file,
     get_s3_object_metadata,
 )
 
-from backend.services.cloud.mock_cloud_service import (
+from backend.services.cloud_storage.mock_cloud_service import (
     list_mock_objects,
     read_mock_file,
     write_mock_file,

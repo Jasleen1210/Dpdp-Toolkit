@@ -19,7 +19,7 @@ interface Props {
   onClearSelection: () => void;
   onToggleDevice: (id: string, checked: boolean) => void;
   onCreateTask: () => void;
-  onFetchResults: () => void;
+  onFetchResults?: () => void;
 }
 
 export function TaskForm({
@@ -126,9 +126,9 @@ export function TaskForm({
 
       <div className="md:col-span-2 flex flex-wrap gap-2">
         <Button onClick={onCreateTask} disabled={loading}>Create Request</Button>
-        <Button variant="outline" onClick={onFetchResults} disabled={loading}>
+        {onFetchResults && <Button variant="outline" onClick={onFetchResults} disabled={loading}>
           Fetch Request Group Results
-        </Button>
+        </Button>}
       </div>
     </div>
   );

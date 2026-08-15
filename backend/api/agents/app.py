@@ -14,6 +14,3 @@ router.include_router(installer_router)
 async def root():
     return {"status": "Backend running smoothly!"}
 
-@router.get("/health")
-async def health():
-    return {"status": "ok"}

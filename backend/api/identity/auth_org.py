@@ -19,20 +19,12 @@ from fastapi.responses import StreamingResponse
 from fastapi import Request
 from pydantic import BaseModel, EmailStr, Field
 
-try:
-    from services.combined.db import (
-        org_memberships_collection,
-        organizations_collection,
-        sessions_collection,
-        users_collection,
-    )
-except ImportError:
-    from backend.services.combined.db import (
-        org_memberships_collection,
-        organizations_collection,
-        sessions_collection,
-        users_collection,
-    )
+from backend.services.persistence.mongo import (
+    org_memberships as org_memberships_collection,
+    organizations as organizations_collection,
+    sessions as sessions_collection,
+    users as users_collection,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth-org"])
 

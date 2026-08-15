@@ -1,21 +1,4 @@
 import React from "react";
-//currently working on azure s3 (install boto3)
-//pip install google-api-python-client
-//pip install azure-storage-blob
-
-// const mockCloudSources = [
-//   {
-//     id: "cl-1",
-//     provider: "AWS S3",
-//     bucket: "s3://prod-data-lake",
-//     objects: 124500,
-//     size: "2.4 TB",
-//     scanned: true,
-//     pii_found: 3402,
-//     region: "ap-south-1",
-//   },
-// ];
-
 
 export default function CloudPanel() {
   const [loading, setLoading] = React.useState(false);
@@ -40,11 +23,8 @@ export default function CloudPanel() {
     }
 
     if (!data.results) {
-      console.error("Invalid response:", data);
       throw new Error("Cloud scan returned an invalid response.");
-    }else{
-        console.log("SCAN RESPONSE:", data);
-      }
+    }
     
     const formatted = data.results.map((file: any, index: number) => ({
       id: index,

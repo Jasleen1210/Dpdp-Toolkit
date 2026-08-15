@@ -8,18 +8,11 @@ from .auth import _resolve_org_id, _validate_agent_auth, _validate_admin_key, _g
 from .helpers import utc_now, _as_utc, _is_device_active, _with_device_activity
 from .models import DeviceRegisterRequest, DeviceApprovalRequest, DeviceHeartbeatRequest
 
-try:
-    from services.local.local_db import (
-        device_approval_requests_collection,
-        device_results_collection,
-        devices_collection,
-    )
-except ImportError:
-    from backend.services.local.local_db import (
-        device_approval_requests_collection,
-        device_results_collection,
-        devices_collection,
-    )
+from backend.services.persistence.mongo import (
+    data_source_approval_requests as device_approval_requests_collection,
+    data_sources as devices_collection,
+    pii_classifications as device_results_collection,
+)
 
 router = APIRouter()
 
@@ -38,11 +31,14 @@ def _get_registered_device_or_fail(device_id: str, org_id: str):
 
 def _upsert_approval_request(device_id: str, org_id: str, hostname: str, agent_version: str):
     now = utc_now()
+    source = devices_collection.find_one({"device_id": device_id, "organisation_id": org_id}, {"_id": 0, "id": 1}) or {}
     device_approval_requests_collection.update_one(
         {"device_id": device_id, "organisation_id": org_id, "status": "pending"},
         {
             "$set": {
                 "device_id": device_id,
+                "data_source_id": source.get("id", device_id),
+                "org_id": org_id,
                 "organisation_id": org_id,
                 "hostname": hostname,
                 "agent_version": agent_version,
@@ -73,6 +69,10 @@ async def register_device(
         {"device_id": req.device_id, "organisation_id": org_id},
         {
             "$set": {
+                "id": existing.get("id", str(uuid4())) if existing else str(uuid4()),
+                "org_id": org_id,
+                "source_type": "local_device",
+                "source_key": req.device_id,
                 "hostname": req.hostname,
                 "agent_version": req.agent_version,
                 "approved": approved,

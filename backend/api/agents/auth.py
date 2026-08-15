@@ -1,10 +1,10 @@
 from typing import Optional
 from fastapi import HTTPException
 
-try:
-    from services.combined.db import org_memberships_collection, organizations_collection
-except ImportError:
-    from backend.services.combined.db import org_memberships_collection, organizations_collection
+from backend.services.persistence.mongo import (
+    org_memberships as org_memberships_collection,
+    organizations as organizations_collection,
+)
 
 
 def _get_org_or_fail(org_id: Optional[str]):

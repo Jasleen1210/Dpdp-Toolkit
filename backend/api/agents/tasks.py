@@ -16,27 +16,39 @@ from .models import (
     RemediationTaskRequest,
     UserRemediationRequest,
 )
-
-try:
-    from services.local.local_db import (
-        device_delete_redactions_collection,
-        device_results_collection,
-        device_tasks_collection,
-        devices_collection,
-        device_cron_logs_collection,
-        device_vulnerabilities_collection,
-    )
-except ImportError:
-    from backend.services.local.local_db import (
-        device_delete_redactions_collection,
-        device_results_collection,
-        device_tasks_collection,
-        devices_collection,
-        device_cron_logs_collection,
-        device_vulnerabilities_collection,
-    )
+from backend.services.persistence.mongo import (
+    data_source_vulnerabilities as device_vulnerabilities_collection,
+    data_sources as devices_collection,
+    data_subject_requests,
+    pii_classifications as device_results_collection,
+    redaction_records as device_delete_redactions_collection,
+    request_tasks as device_tasks_collection,
+    scan_jobs as device_cron_logs_collection,
+)
 
 router = APIRouter()
+
+
+def _create_data_subject_request(org_id: str, request_type: str, identifier: str, now, expires_at, submitted_via: str = "api") -> str:
+    """Create the master request once; individual sources receive request_tasks."""
+    request_id = str(uuid4())
+    canonical_type = {"update": "correction", "delete": "erasure"}.get(request_type, request_type)
+    data_subject_requests.insert_one({
+        "id": request_id,
+        "org_id": org_id,
+        "request_type": canonical_type,
+        "data_principal": {"identifier_hash": identifier.lower()},
+        "verification_status": "verified",
+        "status": "in_progress",
+        "sla_due_at": expires_at,
+        "submitted_via": submitted_via,
+        "created_at": now,
+        "updated_at": now,
+        # Transitional fields consumed by existing agent/API clients.
+        "type": request_type,
+        "identifier": identifier,
+    })
+    return request_id
 
 
 def _iso(dt):
@@ -80,7 +92,7 @@ async def create_distributed_task(
     if req.device_ids:
         device_filter["device_id"] = {"$in": req.device_ids}
 
-    target_devices = list(devices_collection.find(device_filter, {"_id": 0, "device_id": 1}))
+    target_devices = list(devices_collection.find(device_filter, {"_id": 0, "device_id": 1, "id": 1}))
     if not target_devices:
         detail = (
             "No eligible approved devices found for requested device IDs"
@@ -90,11 +102,15 @@ async def create_distributed_task(
         raise HTTPException(status_code=400, detail=detail)
 
     task_group_id = str(uuid4())
+    request_id = _create_data_subject_request(org_id, "access", req.query, utc_now(), expires_at)
     created = []
     for device in target_devices:
         task_id = str(uuid4())
         device_tasks_collection.insert_one({
             "id": task_id,
+            "request_id": request_id,
+            "data_source_id": device.get("id", device["device_id"]),
+            "org_id": org_id,
             "task_group_id": task_group_id,
             "organisation_id": org_id,
             "device_id": device["device_id"],
@@ -316,6 +332,11 @@ async def submit_device_result(
 
     # 5. Insert scan metadata into the device results tracking collection
     device_results_collection.insert_one({
+        "id": str(uuid4()),
+        "org_id": org_id,
+        "data_source_id": task.get("data_source_id", req.device_id),
+        "request_task_id": task.get("id"),
+        "source_type": "local_device",
         "task_id": req.task_id,
         "device_id": req.device_id,
         "organisation_id": org_id,
@@ -361,6 +382,10 @@ async def submit_device_result(
             "completed_at": now, 
             "updated_at": now
         }},
+    )
+    device_tasks_collection.update_one(
+        {"id": req.task_id, "organisation_id": org_id},
+        {"$set": {"result_summary": {"records_found": len(processed_matches), "locations": [m.get("file") for m in processed_matches if m.get("file")]}, "action_taken": "none" if task.get("type", "access") == "access" else task.get("type"), "updated_at": now}},
     )
     
     return {"message": "result accepted", "task_id": req.task_id}
@@ -492,33 +517,6 @@ async def create_modification_task(
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
     x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
 ):
-    org_id = _resolve_org_id(x_org_id, organisation_id)
-    _validate_admin_key(x_admin_key, org_id)
-
-    now = utc_now()
-
-    if payload.action_type == "update":
-        if not payload.new_value:
-            raise HTTPException(status_code=400, detail="Missing 'new_value' for update task")
-        packed_query = f"{payload.target_value}::{payload.new_value}"
-    else:
-        packed_query = payload.target_value
-
-    task_doc = {
-        "id": str(uuid4()),
-        "task_group_id": str(uuid4()),
-        "organisation_id": org_id,        # ← was hardcoded
-        "device_id": payload.device_id,
-        "query": packed_query,
-        "status": "pending",
-        "type": payload.action_type,
-        "created_at": now,
-        "expires_at": now + timedelta(days=1),
-        "updated_at": now,
-    }
-
-    device_tasks_collection.insert_one(task_doc)
-    return {"status": "task_created", "task_id": task_doc["id"]}
     now = utc_now()
 
     if payload.action_type == "update":

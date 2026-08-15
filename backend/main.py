@@ -8,13 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 try:
-    from backend.api.cloud_api.api_s3 import router as cloud_router
+    from backend.api.cloud.api_s3 import router as cloud_router
 except Exception as exc:
     cloud_router = None
     logging.warning("Cloud router disabled: %s", exc)
 
-from backend.api.local.app import router as local_router
-from backend.api.combined.auth_org import router as auth_org_router
+from backend.api.agents.app import router as agent_router
+from backend.api.identity.auth_org import router as identity_router
 
 app = FastAPI()
 
@@ -22,7 +22,7 @@ cors_origins = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,https://dpdp-toolkit.vercel.app",
+        "https://dpdp-toolkit.vercel.app/,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,https://dpdp-toolkit.vercel.app",
     ).split(",")
     if origin.strip()
 ]
@@ -43,5 +43,5 @@ async def health():
 if cloud_router is not None:
     app.include_router(cloud_router)
 
-app.include_router(local_router)
-app.include_router(auth_org_router)
+app.include_router(agent_router)
+app.include_router(identity_router)

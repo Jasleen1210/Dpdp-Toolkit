@@ -1,21 +1,22 @@
 from datetime import datetime
+import os
 import re
 
-from backend.services.cloud.cloud_service import (
+from backend.services.cloud_storage.cloud_service import (
     get_object_metadata,
     list_cloud_objects,
     read_file,
     write_file,
 )
-from backend.services.cloud.db import collection, logs_collection
-from backend.services.detector import detect_pii_full
-from backend.services.pii_summary import build_pii_summary, summarize_pii_instances
+from backend.services.persistence.mongo import audit_logs, pii_classifications
+from backend.services.pii_detection import detect_pii_full
+from backend.services.pii import build_pii_summary, summarize_pii_instances
 
 def find_matching_records(identifier):
     matches = []
     query = identifier.lower()
 
-    docs = collection.find({})
+    docs = pii_classifications.find({})
 
     for doc in docs:
         matched_values = []
@@ -54,7 +55,7 @@ def refresh_file_mapping(path):
         "content": content
     })["pii"]
 
-    collection.update_one(
+    pii_classifications.update_one(
         {"file": path},
         {
             "$set": {
@@ -69,7 +70,9 @@ def refresh_file_mapping(path):
 def refresh_all_cloud_mappings():
     cloud_objects = list_cloud_objects()
     current_files = [obj["file"] for obj in cloud_objects]
-    collection.delete_many({"file": {"$nin": current_files}})
+    # This store also holds local and future database classifications.
+    # Never remove those while refreshing cloud object mappings.
+    pii_classifications.delete_many({"source_type": "cloud_storage", "file": {"$nin": current_files}})
 
     for obj in cloud_objects:
         refresh_file_mapping(obj["file"])
@@ -138,7 +141,11 @@ def delete_data(identifier):
         
         refresh_file_mapping(path)
 
-    logs_collection.insert_one({
+    audit_logs.insert_one({
+        "actor_type": "system",
+        "actor_id": "cloud-action-engine",
+        "entity_type": "data_subject_request",
+        "org_id": os.environ.get("ORG_ID", "dpdp-org"),
         "action": "DELETE",
         "identifier": identifier,
         "files_affected": len(matches),
@@ -157,7 +164,11 @@ def access_data(identifier):
     refresh_all_cloud_mappings()
     matches = find_matching_records(identifier)
 
-    logs_collection.insert_one({
+    audit_logs.insert_one({
+        "actor_type": "system",
+        "actor_id": "cloud-action-engine",
+        "entity_type": "data_subject_request",
+        "org_id": os.environ.get("ORG_ID", "dpdp-org"),
         "action": "ACCESS",
         "identifier": identifier,
         "files_affected": len(matches),
@@ -184,7 +195,11 @@ def update_data(identifier, new_value):
 
         refresh_file_mapping(path)
 
-    logs_collection.insert_one({
+    audit_logs.insert_one({
+        "actor_type": "system",
+        "actor_id": "cloud-action-engine",
+        "entity_type": "data_subject_request",
+        "org_id": os.environ.get("ORG_ID", "dpdp-org"),
         "action": "UPDATE",
         "identifier": identifier,
         "files_affected": len(matches),

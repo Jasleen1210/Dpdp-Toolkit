@@ -119,45 +119,7 @@ class SubmitResultRequest(BaseModel):
     status: str
     scanned_files: int = 0
     matches: List[MatchItem] = Field(default_factory=list)
-class DeleteReplacementItem(BaseModel):
-    file: str
-    original_value: str
-    masked_value: str
-    block_signature: str
     delete_replacements: List[DeleteReplacementItem] = Field(default_factory=list)
-
-class StandaloneScanResultRequest(BaseModel):
-    device_id: str
-    status: str = "completed"
-    scanned_files: int = 0
-    matches: List[MatchItem] = Field(default_factory=list)
-    delete_replacements: List[DeleteReplacementItem] = Field(default_factory=list)
-
-class CronRunRequest(BaseModel):
-    run_id: Optional[str] = Field(default=None)
-    device_id: str
-    task_type: str = Field(..., description="e.g., 'standalone_daily_pii'")
-    status: str = Field(..., description="'started', 'completed', or 'failed'")
-    started_at: datetime
-    duration: Optional[str] = None
-    error: Optional[str] = None
-
-class VulnerabilityItemRequest(BaseModel):
-    title: str
-    data_type: str
-    exposure_type: str
-    priority_score: float = Field(..., ge=0.0, le=1.0)
-    match_count: int
-    path_or_port: str
-    status: str = "unresolved"
-
-class VulnerabilityReportPayload(BaseModel):
-    device_id: str
-    cron_run_id: str
-    vulnerabilities: List[VulnerabilityItemRequest]
-
-class UserRemediationRequest(BaseModel):
-    device_id: str
     action_type: str = Field(..., description="'update' or 'delete'")
     target_file_path: str
     target_data_type: str

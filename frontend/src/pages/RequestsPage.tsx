@@ -1,166 +1,29 @@
 import { useEffect, useState } from "react";
-import { useLocation, Link } from "react-router-dom";
+import { ChevronDown, RefreshCw } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
 import type { DSRRequest } from "@/api/types";
+import { Button } from "@/components/ui/button";
 
-const subtabs = [
-  { label: "All Requests", href: "/requests" },
-  { label: "Delete Requests", href: "/requests/delete" },
-  { label: "Access Requests", href: "/requests/access" },
-  { label: "Correction Requests", href: "/requests/correction" },
-  { label: "Workflow Queue", href: "/requests/queue" },
-];
+const subtabs = [{ label: "All Requests", href: "/requests" }, { label: "Delete Requests", href: "/requests/delete" }, { label: "Access Requests", href: "/requests/access" }, { label: "Correction Requests", href: "/requests/correction" }, { label: "Workflow Queue", href: "/requests/queue" }];
+const API = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "");
+const statusColors: Record<string, string> = { pending: "bg-warning/15 text-warning border-warning/30", in_progress: "bg-primary/15 text-primary border-primary/30", completed: "bg-primary/15 text-primary border-primary/30", rejected: "bg-destructive/15 text-destructive border-destructive/30", awaiting_approval: "bg-warning/15 text-warning border-warning/30" };
+const formatLabel = (value: string) => value.replaceAll("_", " ");
 
-const statusColors: Record<string, string> = {
-  pending: "bg-warning/10 text-warning",
-  in_progress: "bg-primary/10 text-primary",
-  completed: "bg-primary/10 text-primary",
-  rejected: "bg-destructive/10 text-destructive",
-  awaiting_approval: "bg-warning/10 text-warning",
-};
+function SubtabNav() { const location = useLocation(); return <div className="flex gap-1 border-b border-border overflow-x-auto">{subtabs.map((tab) => <Link key={tab.href} to={tab.href} className={`px-3 py-2 text-[12px] font-medium whitespace-nowrap border-b-2 transition-colors ${location.pathname === tab.href ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{tab.label}</Link>)}</div>; }
 
-const API =
-  (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, "") 
-
-function SubtabNav() {
-  const location = useLocation();
-  return (
-    <div className="flex gap-1 border-b border-border overflow-x-auto">
-      {subtabs.map((s) => (
-        <Link
-          key={s.href}
-          to={s.href}
-          className={`px-3 py-2 text-[12px] font-medium whitespace-nowrap border-b-2 transition-colors ${
-            location.pathname === s.href
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          {s.label}
-        </Link>
-      ))}
-    </div>
-  );
+function RequestCard({ request, expanded, onToggle, onApprove }: { request: DSRRequest; expanded: boolean; onToggle: () => void; onApprove: (id: string) => void }) {
+  const isAwaitingApproval = request.status === "awaiting_approval";
+  return <div className="border border-border rounded-sm overflow-hidden bg-card"><button type="button" onClick={onToggle} className="w-full flex items-stretch text-left bg-muted/20 hover:bg-muted/40 transition-colors"><div className="flex w-9 shrink-0 items-center justify-center border-r border-border bg-background/40 px-1"><span className="rotate-180 [writing-mode:vertical-rl] text-[9px] font-semibold uppercase tracking-[0.35em] text-muted-foreground">{request.type}</span></div><div className="flex flex-1 items-start justify-between gap-3 px-3 py-3"><div className="min-w-0 space-y-1"><div className="flex flex-wrap items-center gap-2"><span className="font-medium text-[13px] text-foreground break-all">{request.subject}</span><span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${statusColors[request.status] || "bg-muted text-muted-foreground border-border"}`}>{formatLabel(request.status)}</span></div><div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground"><span className="font-mono-data">Request ID: {request.id}</span><span>Created: {request.created}</span><span>SLA: {request.sla_remaining}</span></div></div><ChevronDown className={`h-4 w-4 mt-1 shrink-0 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} /></div></button>{expanded && <div className="border-t border-border px-4 py-3 bg-card text-[12px] space-y-4"><div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3"><Detail label="Request ID" value={request.id} mono /><Detail label="Request type" value={formatLabel(request.type)} /><Detail label="Submitted" value={request.created} /><Detail label="SLA remaining" value={request.sla_remaining} /></div><div className="rounded-sm border border-border bg-muted/20 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Data subject</div><div className="text-foreground break-all">{request.subject}</div></div><div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">Handler: <span className="text-foreground capitalize">{request.handler}</span></span>{isAwaitingApproval && <Button size="sm" onClick={() => onApprove(request.id)}>Approve request</Button>}</div></div>}</div>;
 }
+function Detail({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div className="rounded-sm border border-border bg-muted/20 px-3 py-2"><div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div><div className={`mt-1 text-foreground break-all ${mono ? "font-mono-data" : ""}`}>{value || "-"}</div></div>; }
 
-function RequestTable({
-  requests,
-  onApprove,
-}: {
-  requests: DSRRequest[];
-  onApprove: (id: string) => void;
-}) {
-  return (
-    <div className="bg-card border border-border rounded-sm sovereign-shadow overflow-x-auto">
-      <table className="w-full text-[13px]">
-        <thead>
-          <tr className="border-b border-border bg-muted/30">
-            <th className="px-4 py-2.5">ID</th>
-            <th className="px-4 py-2.5">Type</th>
-            <th className="px-4 py-2.5">Subject</th>
-            <th className="px-4 py-2.5">Status</th>
-            <th className="px-4 py-2.5">Created</th>
-            <th className="px-4 py-2.5">Action</th>
-          </tr>
-        </thead>
-
-        <tbody className="divide-y divide-border">
-          {requests.map((r) => (
-            <tr key={r.id} className="hover:bg-muted/20">
-              <td className="px-4 py-2.5 font-mono">{r.id}</td>
-
-              <td className="px-4 py-2.5 uppercase text-[11px]">
-                {r.type}
-              </td>
-
-              <td className="px-4 py-2.5">{r.subject}</td>
-
-              <td className="px-4 py-2.5">
-                <span
-                  className={`px-2 py-0.5 text-[11px] rounded-sm ${
-                    statusColors[r.status]
-                  }`}
-                >
-                  {r.status.replace("_", " ")}
-                </span>
-              </td>
-              <td className="px-4 py-2.5">{r.created}</td>
-
-              <td className="px-4 py-2.5">
-                {r.status === "awaiting_approval" && (
-                  <button
-                    onClick={() => onApprove(r.id)}
-                    className="px-2 py-1 text-[11px] bg-primary text-white rounded-sm"
-                  >
-                    Approve
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {requests.length === 0 && (
-        <div className="p-6 text-center text-muted-foreground">
-          No requests found.
-        </div>
-      )}
-    </div>
-  );
-}
-
-const fetchRequests = async () => {
-  const res = await fetch(`${API}/cloud/requests`);
-  const data = await res.json();
-  return data.requests || [];
-};
+async function fetchRequests(): Promise<DSRRequest[]> { const res = await fetch(`${API}/cloud/requests`); const data = await res.json(); return data.requests || []; }
 
 export default function RequestsPage() {
-  const location = useLocation();
-  const path = location.pathname;
-
-  const [requests, setRequests] = useState<DSRRequest[]>([]);
-
-  const loadData = async () => {
-    const data = await fetchRequests();
-    setRequests(data);
-  };
-
-  useEffect(() => {
-    loadData();
-
-    const interval = setInterval(loadData, 5000); // auto refresh
-    return () => clearInterval(interval);
-  }, []);
-
-  const handleApprove = async (id: string) => {
-    await fetch(`${API}/cloud/requests/${id}/approve`, {
-      method: "POST"
-    });
-    loadData();
-  };
-
-  const filtered =
-    path === "/requests/delete"
-      ? requests.filter((r) => r.type === "delete")
-      : path === "/requests/access"
-      ? requests.filter((r) => r.type === "access")
-      : path === "/requests/correction"
-      ? requests.filter((r) => r.type === "update")
-      : requests;
-
-  return (
-    <div className="p-4 lg:p-6 space-y-6">
-      <div>
-        <h1 className="text-lg font-bold">Requests (DSR)</h1>
-        <p className="text-[13px] text-muted-foreground">
-          Data Subject Request handler
-        </p>
-      </div>
-
-      <SubtabNav />
-
-      <RequestTable requests={filtered} onApprove={handleApprove} />
-    </div>
-  );
+  const location = useLocation(); const [requests, setRequests] = useState<DSRRequest[]>([]); const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({}); const [isRefreshing, setIsRefreshing] = useState(false);
+  const loadData = async (showLoading = false) => { if (showLoading) setIsRefreshing(true); try { setRequests(await fetchRequests()); } finally { if (showLoading) setIsRefreshing(false); } };
+  useEffect(() => { void loadData(); const interval = window.setInterval(() => void loadData(), 5000); return () => window.clearInterval(interval); }, []);
+  const handleApprove = async (id: string) => { await fetch(`${API}/cloud/requests/${id}/approve`, { method: "POST" }); await loadData(); };
+  const filtered = location.pathname === "/requests/delete" ? requests.filter((request) => request.type === "delete") : location.pathname === "/requests/access" ? requests.filter((request) => request.type === "access") : location.pathname === "/requests/correction" ? requests.filter((request) => request.type === "update") : requests;
+  return <div className="p-4 lg:p-6 space-y-6"><div><h1 className="text-lg font-bold text-foreground">Requests (DSR)</h1><p className="text-[13px] text-muted-foreground mt-0.5">Review, approve, and track data subject requests.</p></div><SubtabNav /><section className="bg-card border border-border rounded-sm sovereign-shadow p-3 sm:p-4"><div className="mb-3 flex items-center justify-between gap-3"><div><h2 className="text-[13px] font-semibold text-foreground">Request updates</h2><p className="text-[11px] text-muted-foreground mt-0.5">Select a request to see its full details.</p></div><Button variant="outline" size="sm" disabled={isRefreshing} onClick={() => void loadData(true)}><RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh</Button></div><div className="space-y-2">{filtered.length ? filtered.map((request) => <RequestCard key={request.id} request={request} expanded={!!expandedIds[request.id]} onToggle={() => setExpandedIds((current) => ({ ...current, [request.id]: !current[request.id] }))} onApprove={handleApprove} />) : <div className="rounded-sm border border-border bg-muted/30 p-6 text-center text-[12px] text-muted-foreground">No requests found.</div>}</div></section></div>;
 }

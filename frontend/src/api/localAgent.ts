@@ -222,12 +222,6 @@ async function requestJSON<T>(
     }
 
     if (!res.ok) {
-      console.error("localAgent request failed", {
-        url,
-        method,
-        status: res.status,
-        response: text,
-      });
       return {
         ok: false,
         status: res.status,
@@ -238,11 +232,6 @@ async function requestJSON<T>(
 
     return { ok: true, status: res.status, data };
   } catch (err) {
-    console.error("localAgent request network error", {
-      url,
-      method: (init.method || "GET").toUpperCase(),
-      error: err instanceof Error ? err.message : String(err),
-    });
     return {
       ok: false,
       status: 0,
