@@ -1,7 +1,7 @@
 from datetime import datetime
 import re
 
-from backend.services.cloud.mock_cloud_service import (
+from backend.services.cloud.cloud_service import (
     get_object_metadata,
     list_cloud_objects,
     read_file,

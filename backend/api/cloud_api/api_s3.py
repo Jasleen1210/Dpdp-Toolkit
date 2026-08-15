@@ -7,7 +7,7 @@ from datetime import datetime
 
 from uuid import uuid4
 
-from backend.services.cloud.mock_cloud_service import list_cloud_objects, read_file
+from backend.services.cloud.cloud_service import list_cloud_objects, read_file
 from backend.services.cloud.db import collection, requests_collection, logs_collection
 from backend.services.detector import detect_pii_full
 from backend.services.pii_summary import build_pii_summary
@@ -136,7 +136,6 @@ async def approve_request(request_id: str):
     }
 
 
-# Scan entire cloud (mock S3)
 @router.post("/scan-cloud")
 async def scan_cloud():
     cloud_objects = list_cloud_objects()

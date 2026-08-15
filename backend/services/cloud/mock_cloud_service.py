@@ -1,16 +1,10 @@
 from pathlib import Path
 
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-CLOUD_SOURCES = [
-    {
-        "platform": "aws",
-        "provider": "AWS S3",
-        "root": BASE_DIR / "mock_s3",
-        "bucket": "s3://dpdp-prod-data-lake",
-        "region": "ap-south-1",
-        "location": "Mumbai, India",
-    },
+
+MOCK_CLOUD_SOURCES = [
     {
         "platform": "gcp",
         "provider": "GCP Cloud Storage",
@@ -30,19 +24,23 @@ CLOUD_SOURCES = [
 ]
 
 
-def list_cloud_objects():
+def list_mock_objects():
     objects = []
 
-    for source in CLOUD_SOURCES:
+    for source in MOCK_CLOUD_SOURCES:
+
         root = source["root"]
+
         if not root.exists():
             continue
 
         for path in root.rglob("*"):
+
             if not path.is_file():
                 continue
 
             object_key = path.relative_to(root).as_posix()
+
             objects.append(
                 {
                     "file": str(path),
@@ -59,14 +57,29 @@ def list_cloud_objects():
     return objects
 
 
-def list_files():
-    return [obj["file"] for obj in list_cloud_objects()]
+def read_mock_file(path):
+
+    try:
+        return Path(path).read_text(errors="ignore")
+
+    except Exception:
+        return ""
 
 
-def get_object_metadata(path):
+def write_mock_file(path, content):
+
+    Path(path).write_text(
+        content,
+        encoding="utf-8"
+    )
+
+
+def get_mock_object_metadata(path):
+
     normalized = Path(path).resolve()
 
-    for obj in list_cloud_objects():
+    for obj in list_mock_objects():
+
         if Path(obj["file"]).resolve() == normalized:
             return obj
 
@@ -80,14 +93,3 @@ def get_object_metadata(path):
         "object_key": Path(path).name,
         "size_bytes": 0,
     }
-
-
-def read_file(path):
-    try:
-        return Path(path).read_text(errors="ignore")
-    except Exception:
-        return ""
-
-
-def write_file(path, content):
-    Path(path).write_text(content)

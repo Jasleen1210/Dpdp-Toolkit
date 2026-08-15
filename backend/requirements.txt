@@ -8,3 +8,4 @@ pymongo
 python-dotenv
 mongomock
 email-validator
+boto3
