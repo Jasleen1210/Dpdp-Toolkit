@@ -14,8 +14,20 @@ from backend.services.persistence.mongo import (
     pii_classifications as device_results_collection,
 )
 
+try:
+    from services.combined.db import users_collection
+except ImportError:
+    from backend.services.combined.db import users_collection
+
 router = APIRouter()
 
+def _resolve_user_email(user_id: Optional[str]) -> Optional[str]:
+    if not user_id:
+        return None
+    user = users_collection.find_one({"id": user_id}, {"_id": 0, "email": 1, "name": 1})
+    if not user:
+        return None
+    return user.get("email") or user.get("name")
 
 def _get_registered_device_or_fail(device_id: str, org_id: str):
     device = devices_collection.find_one(
@@ -152,11 +164,22 @@ async def approve_device(
     x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
 ):
     org_id = _resolve_org_id(x_org_id, organisation_id)
-    _validate_admin_key(x_admin_key, org_id)
+    approver_user_id = _validate_admin_key(x_admin_key, org_id)
+    approver_email = _resolve_user_email(approver_user_id)
+ 
+    now = utc_now()
 
     result = devices_collection.update_one(
         {"device_id": req.device_id, "organisation_id": org_id},
-        {"$set": {"approved": req.approved, "updated_at": utc_now()}},
+        {
+            "$set": {
+                "approved": req.approved,
+                "updated_at": now,
+                "approved_by": approver_user_id,
+                "approved_by_email": approver_email,
+                "approved_at": now,
+            }
+        },
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -164,7 +187,15 @@ async def approve_device(
     new_status = "approved" if req.approved else "rejected"
     device_approval_requests_collection.update_many(
         {"device_id": req.device_id, "organisation_id": org_id, "status": "pending"},
-        {"$set": {"status": new_status, "resolved_at": utc_now(), "updated_at": utc_now()}},
+        {
+            "$set": {
+                "status": new_status,
+                "resolved_at": now,
+                "updated_at": now,
+                "resolved_by": approver_user_id,
+                "approved_by_email": approver_email,
+            }
+        },
     )
     return {"device_id": req.device_id, "approved": req.approved}
 

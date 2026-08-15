@@ -15,6 +15,9 @@ export type Device = {
   active_window_seconds?: number;
   agent_version?: string;
   organisation_id?: string;
+  approved_by?: string | null;
+  approved_by_email?: string | null;
+  approved_at?: string | null;
 };
 
 export type DeviceTask = {
@@ -68,6 +71,8 @@ export type DeviceApprovalRequestItem = {
   created_at?: string;
   updated_at?: string;
   resolved_at?: string;
+  resolved_by?: string | null;
+  approved_by_email?: string | null;
 };
 
 export type ApproveDeviceRequest = {

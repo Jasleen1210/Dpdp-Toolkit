@@ -39,7 +39,7 @@ def _validate_agent_auth(authorization: Optional[str], org_id: Optional[str]):
         raise HTTPException(status_code=401, detail="Invalid agent token")
 
 
-def _validate_admin_key(admin_key: Optional[str], org_id: Optional[str]):
+def _validate_admin_key(admin_key: Optional[str], org_id: Optional[str]) -> Optional[str]:
     if not admin_key:
         raise HTTPException(status_code=401, detail="Missing admin key")
     org = _get_org_or_fail(org_id)
@@ -54,10 +54,10 @@ def _validate_admin_key(admin_key: Optional[str], org_id: Optional[str]):
         {"_id": 0, "user_id": 1},
     )
     if member:
-        return
+        return member.get("user_id")
 
     expected_key = org.get("admin_api_key", "")
     if expected_key and admin_key == expected_key:
-        return
+        return None
 
     raise HTTPException(status_code=401, detail="Invalid admin key")
