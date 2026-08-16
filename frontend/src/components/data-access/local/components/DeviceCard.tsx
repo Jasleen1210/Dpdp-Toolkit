@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { VulnerabilityTable } from "./VulnerabillityTable";
+import { VulnerabilityTable } from "./VulnerabilityTable";
 import {
   getDeviceVulnerabilities,
   type Device,

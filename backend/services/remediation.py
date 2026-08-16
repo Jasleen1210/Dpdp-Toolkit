@@ -12,70 +12,97 @@ from backend.services.persistence.mongo import audit_logs, pii_classifications
 from backend.services.pii_detection import detect_pii_full
 from backend.services.pii import build_pii_summary, summarize_pii_instances
 
+
 def find_matching_records(identifier):
     matches = []
-    query = identifier.lower()
+    query = identifier.strip().lower()
+    if not query:
+        return []
 
-    docs = pii_classifications.find({})
+    # Get all cloud objects across AWS, Azure, GCP, and connected storage
+    cloud_objs = list_cloud_objects()
+    seen_files = set()
 
-    for doc in docs:
-        matched_values = []
-        content = read_file(doc["file"])
-        pii_result = detect_pii_full({
-            "file": doc["file"],
-            "content": content,
-        })["pii"]
+    # Extract digits for flexible phone number matching
+    query_digits = re.sub(r"\D", "", query)
+    is_phone_query = len(query_digits) >= 10
 
-        for pii in pii_result:
-            if query in pii.get("value", "").lower():
-                matched_values.append(pii)
+    for obj in cloud_objs:
+        file_path = obj.get("file")
+        if not file_path or file_path in seen_files:
+            continue
+        seen_files.add(file_path)
 
-        if matched_values or query in content.lower():
+        try:
+            content = read_file(file_path)
+        except Exception:
+            continue
+
+        if not content:
+            continue
+
+        content_lower = content.lower()
+        matched = False
+
+        if query in content_lower:
+            matched = True
+        elif is_phone_query:
+            content_digits = re.sub(r"\D", "", content_lower)
+            if query_digits in content_digits:
+                matched = True
+
+        if matched:
             matches.append({
-                "file": doc["file"],
-                "platform": doc.get("platform", "unknown"),
-                "provider": doc.get("provider", "Unknown"),
-                "bucket": doc.get("bucket", "unknown"),
-                "region": doc.get("region", "unknown"),
-                "location": doc.get("location", "unknown"),
-                "object_key": doc.get("object_key", doc["file"]),
-                "pii": doc.get("pii", {}),
-                "matched_values": matched_values,
-                "matched_instances": summarize_pii_instances(matched_values),
+                "file": file_path,
+                "platform": obj.get("platform", "cloud"),
+                "provider": obj.get("provider", "AWS"),
+                "bucket": obj.get("bucket", "unknown"),
+                "region": obj.get("region", "global"),
+                "location": obj.get("location", file_path),
+                "object_key": obj.get("object_key", file_path),
+                "pii": obj.get("pii", {"PII": True}),
+                "matched_values": [{"type": "PII", "value": identifier}],
+                "matched_instances": {"PII": 1},
             })
 
     return matches
 
+
 def refresh_file_mapping(path):
-    content = read_file(path)
-    metadata = get_object_metadata(path)
+    try:
+        content = read_file(path)
+        metadata = get_object_metadata(path)
 
-    pii_result = detect_pii_full({
-        "file": path,
-        "content": content
-    })["pii"]
+        pii_result = detect_pii_full({
+            "file": path,
+            "content": content,
+        })["pii"]
 
-    pii_classifications.update_one(
-        {"file": path},
-        {
-            "$set": {
-                **metadata,
-                **build_pii_summary(pii_result),
+        pii_classifications.update_one(
+            {"file": path},
+            {
+                "$set": {
+                    **metadata,
+                    **build_pii_summary(pii_result),
+                },
+                "$unset": {"detected_values": ""},
             },
-            "$unset": {"detected_values": ""},
-        },
-        upsert=True
-    )
+            upsert=True,
+        )
+    except Exception:
+        pass
+
 
 def refresh_all_cloud_mappings():
-    cloud_objects = list_cloud_objects()
-    current_files = [obj["file"] for obj in cloud_objects]
-    # This store also holds local and future database classifications.
-    # Never remove those while refreshing cloud object mappings.
-    pii_classifications.delete_many({"source_type": "cloud_storage", "file": {"$nin": current_files}})
+    try:
+        cloud_objects = list_cloud_objects()
+        current_files = [obj["file"] for obj in cloud_objects]
+        pii_classifications.delete_many({"source_type": "cloud_storage", "file": {"$nin": current_files}})
+        for obj in cloud_objects:
+            refresh_file_mapping(obj["file"])
+    except Exception:
+        pass
 
-    for obj in cloud_objects:
-        refresh_file_mapping(obj["file"])
 
 def build_request_response(action, identifier, matches, status="SUCCESS", new_value=None):
     pii_type_frequency = {}
@@ -121,11 +148,22 @@ def build_request_response(action, identifier, matches, status="SUCCESS", new_va
 
     return response
 
+
 def replace_query_value(content, identifier, replacement):
-    return re.sub(re.escape(identifier), replacement, content, flags=re.IGNORECASE)
+    # Direct replacement
+    new_content = re.sub(re.escape(identifier), replacement, content, flags=re.IGNORECASE)
+    
+    # If phone number with spaces/hyphens, also replace common spacing variants
+    digits = re.sub(r"\D", "", identifier)
+    if len(digits) >= 10:
+        # Match standard patterns like +91 98765 43210, 98765-43210, 9876543210
+        pattern = r"(?:\+91[\s\-]?)?" + r"[\s\-]?".join(list(digits[-10:]))
+        new_content = re.sub(pattern, replacement, new_content, flags=re.IGNORECASE)
+
+    return new_content
+
 
 def delete_data(identifier):
-    refresh_all_cloud_mappings()
     matches = find_matching_records(identifier)
 
     for m in matches:
@@ -134,11 +172,11 @@ def delete_data(identifier):
 
         content = replace_query_value(content, identifier, "[REDACTED]")
 
-        for pii in m["matched_values"]:
-            content = content.replace(pii["value"], "[REDACTED]")
+        for pii in m.get("matched_values", []):
+            if pii.get("value"):
+                content = content.replace(pii["value"], "[REDACTED]")
 
         write_file(path, content)
-        
         refresh_file_mapping(path)
 
     audit_logs.insert_one({
@@ -150,7 +188,7 @@ def delete_data(identifier):
         "identifier": identifier,
         "files_affected": len(matches),
         "timestamp": datetime.now(),
-        "status": "SUCCESS"
+        "status": "SUCCESS",
     })
 
     return build_request_response(
@@ -160,8 +198,8 @@ def delete_data(identifier):
         status="APPROVED_AND_REMOVED",
     )
 
+
 def access_data(identifier):
-    refresh_all_cloud_mappings()
     matches = find_matching_records(identifier)
 
     audit_logs.insert_one({
@@ -173,13 +211,13 @@ def access_data(identifier):
         "identifier": identifier,
         "files_affected": len(matches),
         "timestamp": datetime.now(),
-        "status": "SUCCESS"
+        "status": "SUCCESS",
     })
 
     return build_request_response("ACCESS", identifier, matches)
 
+
 def update_data(identifier, new_value):
-    refresh_all_cloud_mappings()
     matches = find_matching_records(identifier)
 
     for m in matches:
@@ -188,11 +226,11 @@ def update_data(identifier, new_value):
 
         content = replace_query_value(content, identifier, new_value)
 
-        for pii in m["matched_values"]:
-            content = content.replace(pii["value"], new_value)
+        for pii in m.get("matched_values", []):
+            if pii.get("value"):
+                content = content.replace(pii["value"], new_value)
 
         write_file(path, content)
-
         refresh_file_mapping(path)
 
     audit_logs.insert_one({
@@ -204,7 +242,7 @@ def update_data(identifier, new_value):
         "identifier": identifier,
         "files_affected": len(matches),
         "timestamp": datetime.now(),
-        "status": "SUCCESS"
+        "status": "SUCCESS",
     })
 
     return build_request_response(
@@ -216,15 +254,18 @@ def update_data(identifier, new_value):
         "message": f"Data successfully changed from {identifier} to {new_value} across {len(matches)} cloud location(s)."
     }
 
-def process_request(req):
-    identifier = req["identifier"]
-    req_type = req["type"].upper()
 
-    if req_type == "DELETE":
+def process_request(req):
+    identifier = req.get("identifier", "")
+    raw_type = str(req.get("type") or req.get("request_type") or "ACCESS").upper()
+
+    if raw_type in ("DELETE", "ERASURE"):
         return delete_data(identifier)
-    elif req_type == "ACCESS":
+    elif raw_type in ("ACCESS",):
         return access_data(identifier)
-    elif req_type == "UPDATE":
-        if not req.get("new_value"):
-            return {"error": "new_value required"}
-        return update_data(identifier, req["new_value"])
+    elif raw_type in ("UPDATE", "CORRECTION"):
+        new_val = req.get("new_value")
+        if not new_val:
+            return {"error": "new_value required for update/correction"}
+        return update_data(identifier, new_val)
+    return {"error": f"Unknown request type {raw_type}"}

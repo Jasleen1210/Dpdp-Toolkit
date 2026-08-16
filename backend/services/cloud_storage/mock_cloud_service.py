@@ -27,20 +27,17 @@ MOCK_CLOUD_SOURCES = [
 def list_mock_objects():
     objects = []
 
+    # Built-in static mock sources
     for source in MOCK_CLOUD_SOURCES:
-
         root = source["root"]
-
         if not root.exists():
             continue
 
         for path in root.rglob("*"):
-
             if not path.is_file():
                 continue
 
             object_key = path.relative_to(root).as_posix()
-
             objects.append(
                 {
                     "file": str(path),
@@ -49,6 +46,31 @@ def list_mock_objects():
                     "bucket": source["bucket"],
                     "region": source["region"],
                     "location": source["location"],
+                    "object_key": object_key,
+                    "size_bytes": path.stat().st_size,
+                }
+            )
+
+    # Dynamic connected cloud sources stored in backend/cloud_connected
+    connected_root = BASE_DIR / "cloud_connected"
+    if connected_root.exists():
+        for path in connected_root.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(connected_root)
+            parts = rel.parts
+            provider_name = parts[0].replace("_", " ").title() if len(parts) > 0 else "Cloud Storage"
+            bucket_name = parts[1] if len(parts) > 1 else "default-container"
+            object_key = "/".join(parts[2:]) if len(parts) > 2 else path.name
+
+            objects.append(
+                {
+                    "file": str(path),
+                    "platform": "cloud",
+                    "provider": f"{provider_name}",
+                    "bucket": f"cloud://{bucket_name}",
+                    "region": "connected",
+                    "location": f"Connected ({provider_name})",
                     "object_key": object_key,
                     "size_bytes": path.stat().st_size,
                 }

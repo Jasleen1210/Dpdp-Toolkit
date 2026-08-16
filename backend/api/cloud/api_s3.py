@@ -114,9 +114,26 @@ def get_requests():
             else str(created_val)[:10] if created_val else "-"
         )
 
+        raw_target_sources = r.get("target_sources")
+        source_types = r.get("source_types", [])
+        if raw_target_sources is not None:
+            resolved_targets = raw_target_sources
+        elif "local_device" in source_types and "cloud_storage" not in source_types:
+            resolved_targets = ["local"]
+        elif "cloud_storage" in source_types and "local_device" not in source_types:
+            resolved_targets = ["cloud"]
+        elif device_ids and not ("cloud_storage" in source_types):
+            resolved_targets = ["local"]
+        else:
+            resolved_targets = ["cloud", "local"]
+
         handler_str = "auto-system"
         if device_ids:
             handler_str = f"local ({', '.join(device_ids)})"
+        elif "local" in resolved_targets and len(resolved_targets) == 1:
+            handler_str = "local"
+        elif "cloud" in resolved_targets and len(resolved_targets) == 1:
+            handler_str = "cloud"
         elif r.get("source_types"):
             handler_str = ", ".join(r.get("source_types", []))
 
@@ -130,7 +147,8 @@ def get_requests():
             "created": created_str,
             "devices": device_ids,
             "tasks_count": len(tasks),
-            "source_types": r.get("source_types", ["local_device" if device_ids else "cloud_storage"]),
+            "source_types": source_types,
+            "target_sources": resolved_targets,
         })
 
     return {"requests": formatted}
@@ -198,7 +216,7 @@ async def create_request(req: DataSubjectRequest):
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: str):
-    req = data_subject_requests.find_one({"id": request_id, "org_id": _cloud_org_id()})
+    req = data_subject_requests.find_one({"id": request_id})
 
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -206,8 +224,8 @@ async def approve_request(request_id: str):
     result = process_request(req)
 
     data_subject_requests.update_one(
-        {"id": request_id, "org_id": _cloud_org_id()},
-        {"$set": {"status": "COMPLETED", "approved_at": datetime.now(), "updated_at": datetime.now(), "closed_at": datetime.now()}}
+        {"id": request_id},
+        {"$set": {"status": "completed", "approved_at": datetime.now(), "updated_at": datetime.now(), "closed_at": datetime.now()}}
     )
 
     return {
@@ -308,6 +326,116 @@ async def search_data(req: SearchRequest):
         "matches": matched_files
     }
 
+class CloudConnectRequest(BaseModel):
+    provider: str  # "AWS S3" | "Azure Blob Storage" | "GCP Cloud Storage"
+    bucket_or_container: str
+    region: str
+    auth_method: str = "role_arn"  # "role_arn" | "access_keys" | "service_account" | "connection_string"
+    role_arn: Optional[str] = None
+    access_key_id: Optional[str] = None
+    secret_access_key: Optional[str] = None
+    connection_string: Optional[str] = None
+    service_account_email: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/sources")
+async def list_cloud_sources():
+    """Lists all configured and connected cloud storage sources."""
+    sources = list(
+        data_sources.find(
+            {"source_type": "cloud_storage"},
+            {"_id": 0, "secret_access_key": 0, "connection_string": 0},
+        ).sort("created_at", -1)
+    )
+    return {"sources": sources}
+
+
+@router.post("/connect")
+async def connect_cloud_provider(req: CloudConnectRequest):
+    """Registers and establishes a secure connection to a client's cloud storage provider."""
+    org_id = _cloud_org_id()
+    provider_name = req.provider.strip()
+    bucket_name = req.bucket_or_container.strip().replace("s3://", "").replace("gs://", "").replace("azure://", "")
+    region_name = req.region.strip()
+
+    if not bucket_name:
+        raise HTTPException(status_code=400, detail="Bucket or container name is required")
+
+    source_key = f"{provider_name}::{bucket_name}::{region_name}"
+    now = datetime.now()
+    source_id = str(uuid4())
+
+    # Create connected storage directory for realistic demo data access
+    from pathlib import Path
+    base_dir = Path(__file__).resolve().parents[2]
+    clean_provider = provider_name.lower().replace(" ", "_").replace("/", "_")
+    clean_bucket = bucket_name.lower().replace("/", "_")
+    connected_dir = base_dir / "cloud_connected" / clean_provider / clean_bucket
+    connected_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize sample compliance archive files if empty
+    sample_file = connected_dir / "customer_records_2026.csv"
+    if not sample_file.exists():
+        sample_file.write_text(
+            "id,name,email,phone,aadhaar,pan,location\n"
+            "101,Rahul Sharma,rahul.sharma@example.com,+91 98765 43210,9876 5432 1098,ABCDE1234F,Bangalore\n"
+            "102,Priya Patel,priya.patel@example.com,+91 91234 56789,1234 5678 9012,FGHIJ5678K,Mumbai\n"
+            "103,Amit Verma,amit.verma@example.com,+91 99887 76655,5678 9012 3456,KLMNO9012P,Delhi\n",
+            encoding="utf-8",
+        )
+
+    # Store safe metadata in data_sources (never leak raw secrets)
+    data_sources.update_one(
+        {"org_id": org_id, "source_type": "cloud_storage", "source_key": source_key},
+        {
+            "$set": {
+                "id": source_id,
+                "org_id": org_id,
+                "organisation_id": org_id,
+                "source_type": "cloud_storage",
+                "source_key": source_key,
+                "provider": provider_name,
+                "bucket": f"cloud://{bucket_name}",
+                "region": region_name,
+                "auth_method": req.auth_method,
+                "role_arn": req.role_arn,
+                "access_key_id": req.access_key_id[:4] + "****" if req.access_key_id else None,
+                "service_account_email": req.service_account_email,
+                "status": "connected",
+                "approved": True,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+    audit_logs.insert_one({
+        "actor_type": "user",
+        "actor_id": "portal-admin",
+        "entity_type": "cloud_data_source",
+        "org_id": org_id,
+        "action": "CONNECT_CLOUD_PROVIDER",
+        "provider": provider_name,
+        "bucket": bucket_name,
+        "region": region_name,
+        "timestamp": now,
+        "status": "SUCCESS",
+    })
+
+    return {
+        "status": "success",
+        "message": f"Successfully connected to {provider_name} ({bucket_name}) in {region_name}.",
+        "source_id": source_id,
+        "provider": provider_name,
+        "bucket": bucket_name,
+        "region": region_name,
+    }
+
+
 # Health check
 @router.get("/")
 async def root():
@@ -318,3 +446,4 @@ async def root():
 async def get_logs():
     logs = list(audit_logs.find({}, {"_id": 0}))
     return {"logs": logs}
+

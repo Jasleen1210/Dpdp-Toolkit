@@ -15,6 +15,7 @@ except Exception as exc:
 
 from backend.api.agents.app import router as agent_router
 from backend.api.identity.auth_org import router as identity_router
+from backend.api.unified_requests import router as unified_requests_router
 
 app = FastAPI()
 
@@ -45,3 +46,4 @@ if cloud_router is not None:
 
 app.include_router(agent_router)
 app.include_router(identity_router)
+app.include_router(unified_requests_router)

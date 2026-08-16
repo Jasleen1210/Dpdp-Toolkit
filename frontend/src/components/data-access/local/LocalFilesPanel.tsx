@@ -34,7 +34,7 @@ export default function LocalFilesPanel() {
   const authToken = useAppSelector((s) => s.auth.token);
   const authMode = useAppSelector((s) => s.auth.mode);
 
-  const envBaseUrl = ((import.meta.env.VITE_API_URL as string | undefined) || "").trim();
+  const envBaseUrl = ((import.meta.env.VITE_API_URL as string | undefined) || "http://127.0.0.1:8010").trim();
   const [baseUrl] = useState(envBaseUrl);
 
   const [orgId, setOrgId] = useState("");
@@ -149,14 +149,21 @@ export default function LocalFilesPanel() {
     return tasks;
   };
 
-  useEffect(() => {
+  const refreshAllData = async () => {
     if (!baseUrl.trim() || !orgId.trim()) return;
     setErrorText("");
-    void refreshDevices(false);
-    void refreshApprovalRequests();
-    void refreshDailyScanReports();
-    void refreshTaskHistory();
-  }, [apiConfig, baseUrl, orgId]);
+    await Promise.allSettled([
+      refreshDevices(false),
+      refreshApprovalRequests(),
+      refreshDailyScanReports(),
+      refreshTaskHistory(),
+    ]);
+  };
+
+  useEffect(() => {
+    if (!baseUrl.trim() || !orgId.trim()) return;
+    void refreshAllData();
+  }, [baseUrl, orgId, adminKey, agentToken]);
 
   useEffect(() => {
     if (activeTab !== "new-task" || !baseUrl.trim() || !orgId.trim()) return;
@@ -167,7 +174,6 @@ export default function LocalFilesPanel() {
       await refreshTaskHistory();
     };
 
-    void syncTaskUpdates();
     const timer = window.setInterval(() => {
       void syncTaskUpdates();
     }, 4000);
@@ -176,7 +182,7 @@ export default function LocalFilesPanel() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [activeTab, apiConfig, baseUrl, orgId]);
+  }, [activeTab, baseUrl, orgId]);
 
   const handleApproveDevice = async (deviceId: string) => {
     clearMessages();
@@ -207,8 +213,12 @@ export default function LocalFilesPanel() {
         ...(actionType === "update" && { new_value: newValue }),
       };
       const res = await createRemediationTask(apiConfig, payload);
-      if (res.ok && res.data) ok++;
-      else errs.push(`${deviceId}: ${res.error || "Unknown error"}`);
+      if (res.ok && res.data) {
+        ok++;
+        if (res.data.task_group_id) setLatestTaskGroupId(res.data.task_group_id);
+      } else {
+        errs.push(`${deviceId}: ${res.error || "Unknown error"}`);
+      }
     }
 
     await refreshTaskHistory();
@@ -219,13 +229,13 @@ export default function LocalFilesPanel() {
 
   const handleFetchTaskResults = async () => {
     clearMessages();
-    if (!latestTaskGroupId.trim()) { setErrorText("Create a request first."); return; }
+    if (!latestTaskGroupId.trim()) { setErrorText("Create a request first or no active group ID."); return; }
     setLoading(true);
     const res = await getTaskGroupResults(apiConfig, latestTaskGroupId.trim());
     setLoading(false);
     if (!res.ok || !res.data) { setErrorText(`Fetch failed: ${res.error}`); return; }
     setTaskResultGroup(res.data);
-    setStatusText(`Loaded ${res.data.tasks.length} requests, ${res.data.results.length} results.`);
+    setStatusText(`Loaded ${res.data.tasks?.length ?? 0} requests, ${res.data.results?.length ?? 0} results.`);
   };
 
   return (

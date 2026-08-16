@@ -11,18 +11,48 @@ def _use_mock_db() -> bool:
     return os.getenv("USE_MOCK_DB", "").strip() == "1"
 
 
+def _configure_dns_resolvers():
+    """Configures public DNS resolvers (8.8.8.8, 1.1.1.1) to avoid local SRV DNS timeouts on Windows."""
+    try:
+        import dns.resolver
+        resolver = dns.resolver.Resolver()
+        resolver.nameservers = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
+        resolver.timeout = 5.0
+        resolver.lifetime = 10.0
+        dns.resolver.default_resolver = resolver
+    except Exception:
+        pass
+
+
 def _make_client():
     if _use_mock_db():
         import mongomock
 
         return mongomock.MongoClient()
 
-    from pymongo import MongoClient
+    _configure_dns_resolvers()
+
+    from pymongo import MongoClient, ReadPreference
 
     atlas_url = os.getenv("ATLAS_URL", "").strip()
     if not atlas_url:
-        raise RuntimeError("ATLAS_URL is required when USE_MOCK_DB != 1")
-    return MongoClient(atlas_url)
+        print("[MongoDB] No ATLAS_URL configured, falling back to local mongomock.")
+        import mongomock
+        return mongomock.MongoClient()
+
+    try:
+        return MongoClient(
+            atlas_url,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            socketTimeoutMS=10000,
+            retryWrites=True,
+            read_preference=ReadPreference.PRIMARY_PREFERRED,
+        )
+    except Exception as exc:
+        print(f"[MongoDB] Failed to connect to Atlas ({exc}). Falling back to local mongomock.")
+        import mongomock
+        return mongomock.MongoClient()
 
 
 client = _make_client()

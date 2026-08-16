@@ -37,6 +37,7 @@ def _create_data_subject_request(
     expires_at,
     submitted_via: str = "api",
     source_types: Optional[list] = None,
+    target_sources: Optional[list] = None,
 ) -> str:
     """Create the master request once; individual sources receive request_tasks."""
     request_id = str(uuid4())
@@ -55,6 +56,7 @@ def _create_data_subject_request(
         "sla_due_at": expires_at,
         "submitted_via": submitted_via,
         "source_types": source_types or ["local_device"],
+        "target_sources": target_sources or ["local"],
         "created_at": now,
         "updated_at": now,
         # Transitional fields consumed by existing agent/API clients.
@@ -204,14 +206,20 @@ async def list_distributed_tasks(
     results = list(
         device_results_collection.find(
             {
-                "$or": [
-                    {"request_task_id": {"$in": task_ids}},
-                    {"task_id": {"$in": task_ids}},
-                ],
-                "$or": [
-                    {"org_id": org_id},
-                    {"organisation_id": org_id},
-                ],
+                "$and": [
+                    {
+                        "$or": [
+                            {"request_task_id": {"$in": task_ids}},
+                            {"task_id": {"$in": task_ids}},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"org_id": org_id},
+                            {"organisation_id": org_id},
+                        ]
+                    },
+                ]
             },
             {"_id": 0},
         )
