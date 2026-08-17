@@ -9,3 +9,4 @@ python-dotenv
 mongomock
 email-validator
 boto3
+psycopg[binary]
