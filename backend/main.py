@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+load_dotenv(
+    dotenv_path=os.path.join(os.path.dirname(__file__), ".env")
+)
 
 try:
     from backend.api.cloud.api_s3 import router as cloud_router
@@ -25,10 +27,17 @@ from backend.api.identity.auth_org import router as identity_router
 app = FastAPI()
 
 cors_origins = [
-    origin.strip()
+    origin.strip().rstrip("/")
     for origin in os.getenv(
         "CORS_ORIGINS",
-        "https://dpdp-toolkit.vercel.app/,http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173,https://dpdp-toolkit.vercel.app",
+        (
+            "https://dpdp-toolkit.vercel.app,"
+            "http://localhost:8080,"
+            "http://127.0.0.1:8080,"
+            "http://localhost:5173,"
+            "http://127.0.0.1:5173,"
+            "https://dpdp-toolkit.vercel.app"
+        ),
     ).split(",")
     if origin.strip()
 ]
@@ -36,7 +45,7 @@ cors_origins = [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
