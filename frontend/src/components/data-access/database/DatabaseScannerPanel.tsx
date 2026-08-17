@@ -8,6 +8,7 @@ import {
   listDatabaseSources,
   listMyOrganisations,
   scanDatabaseSource,
+  deleteUpdateDatabaseSource,
   type DatabaseFinding,
   type DatabaseSource,
   type OrganisationSummary,
@@ -52,6 +53,16 @@ export default function DatabaseScannerPanel() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+
+  const [scanAuth, setScanAuth] = useState(false);
+
+  const [remediateIdentifier, setRemediateIdentifier] = useState("");
+  const [remediateAction, setRemediateAction] = useState<"UPDATE" | "DELETE">("UPDATE");
+  const [remediateReplacement, setRemediateReplacement] = useState("");
+  const [remediateResult, setRemediateResult] = useState<{
+    impacted_locations: number;
+    impacted_rows: number;
+  } | null>(null);
 
   const selectedSource = useMemo(
     () =>
@@ -203,6 +214,10 @@ export default function DatabaseScannerPanel() {
     setFindings([]);
     setError("");
     setMessage("");
+    setRemediateIdentifier("");
+    setRemediateAction("UPDATE");
+    setRemediateReplacement("");
+    setRemediateResult(null);
 
     if (!token || !organisationId || !sourceId) {
       return;
@@ -255,6 +270,7 @@ export default function DatabaseScannerPanel() {
         token,
         organisationId,
         selectedSourceId,
+        scanAuth,
       );
 
       setFindings(response.findings);
@@ -262,14 +278,10 @@ export default function DatabaseScannerPanel() {
       const summary = response.summary;
 
       setMessage(
-        `Scan completed: ${
-          summary.finding_count || 0
-        } PII finding(s) across ${
-          summary.scanned_tables || 0
-        } table(s), ${
-          summary.inspected_columns || 0
-        } columns and ${
-          summary.sampled_values || 0
+        `Scan completed: ${summary.finding_count || 0
+        } PII finding(s) across ${summary.scanned_tables || 0
+        } table(s), ${summary.inspected_columns || 0
+        } columns and ${summary.sampled_values || 0
         } sampled values.`,
       );
 
@@ -286,6 +298,57 @@ export default function DatabaseScannerPanel() {
         caught instanceof Error
           ? caught.message
           : "Database scan failed.",
+      );
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const executeRemediation = async () => {
+    if (!token) {
+      setError("Please sign in first.");
+      return;
+    }
+
+    if (!organisationId || !selectedSourceId) {
+      setError("Select a database source first.");
+      return;
+    }
+
+    setBusy("remediate");
+    setError("");
+    setMessage("");
+    setRemediateResult(null);
+
+    try {
+      const response = await deleteUpdateDatabaseSource(
+        token,
+        organisationId,
+        selectedSourceId,
+        remediateIdentifier,
+        remediateAction,
+        remediateAction === "UPDATE" ? (remediateReplacement || "[REDACTED]") : null,
+      );
+
+      setRemediateResult({
+        impacted_locations: response.impacted_locations,
+        impacted_rows: response.impacted_rows,
+      });
+
+      setMessage(
+        `Changes made successfully. ${remediateAction === "UPDATE" ? "Redacted" : "Deleted"
+        } target PII value across ${response.impacted_locations} table(s), affecting ${response.impacted_rows
+        } row(s).`,
+      );
+
+      // Trigger findings and sources reload
+      await selectSource(selectedSourceId);
+      await loadSources(organisationId);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Database remediation failed.",
       );
     } finally {
       setBusy("");
@@ -391,7 +454,7 @@ export default function DatabaseScannerPanel() {
       ) : null}
 
       {message ? (
-        <div className="rounded-sm border border-primary/30 bg-primary/10 px-3 py-2 text-[12px] text-foreground">
+        <div className="rounded-sm border border-primary/30 bg-primary/10 px-3 py-2 text-[12px] text-primary">
           {message}
         </div>
       ) : null}
@@ -423,14 +486,26 @@ export default function DatabaseScannerPanel() {
             </Button>
 
             {selectedSource ? (
-              <Button
-                onClick={() => void scanSelectedSource()}
-                disabled={busy !== ""}
-              >
-                {busy === "scan"
-                  ? "Scanning..."
-                  : "Run PII Scan"}
-              </Button>
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={scanAuth}
+                    onChange={(e) => setScanAuth(e.target.checked)}
+                    className="rounded border-border bg-background"
+                  />
+                  Scan auth schemas
+                </label>
+
+                <Button
+                  onClick={() => void scanSelectedSource()}
+                  disabled={busy !== ""}
+                >
+                  {busy === "scan"
+                    ? "Scanning..."
+                    : "Run PII Scan"}
+                </Button>
+              </div>
             ) : null}
           </div>
         </div>
@@ -486,11 +561,10 @@ export default function DatabaseScannerPanel() {
                     onClick={() =>
                       void selectSource(source.id)
                     }
-                    className={`cursor-pointer hover:bg-muted/20 ${
-                      selectedSourceId === source.id
-                        ? "bg-primary/5"
-                        : ""
-                    }`}
+                    className={`cursor-pointer hover:bg-muted/20 ${selectedSourceId === source.id
+                      ? "bg-primary/5"
+                      : ""
+                      }`}
                   >
                     <td className="px-4 py-2.5 font-medium text-foreground">
                       {source.display_name}
@@ -514,15 +588,14 @@ export default function DatabaseScannerPanel() {
 
                     <td className="px-4 py-2.5">
                       <span
-                        className={`inline-flex items-center gap-1.5 text-[12px] capitalize ${
-                          source.last_scan_status ===
+                        className={`inline-flex items-center gap-1.5 text-[12px] capitalize ${source.last_scan_status ===
                           "completed"
-                            ? "text-primary"
-                            : source.last_scan_status ===
-                                "failed"
-                              ? "text-destructive"
-                              : "text-muted-foreground"
-                        }`}
+                          ? "text-primary"
+                          : source.last_scan_status ===
+                            "failed"
+                            ? "text-destructive"
+                            : "text-muted-foreground"
+                          }`}
                       >
                         <span className="h-1.5 w-1.5 rounded-full bg-current" />
                         {source.last_scan_status ||
@@ -586,6 +659,102 @@ export default function DatabaseScannerPanel() {
         </div>
       ) : null}
 
+      {/* Remediation Panel */}
+      {selectedSource ? (
+        <div className="rounded-sm border border-border bg-card p-4">
+          <h3 className="text-[13px] font-semibold text-foreground">
+            Database PII Redaction & Deletion
+          </h3>
+
+          <p className="mt-1 text-[12px] text-muted-foreground">
+            Search for a specific PII value across all sampleable columns in this database to redact it using SQL REPLACE or delete the matching rows.
+          </p>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-3">
+            <div className="space-y-1.5">
+              <label
+                htmlFor="remediate-identifier"
+                className="text-[12px] text-muted-foreground"
+              >
+                Target PII Value
+              </label>
+
+              <input
+                id="remediate-identifier"
+                type="text"
+                className="h-10 w-full rounded-sm border border-border bg-background px-3 text-sm"
+                placeholder="e.g. john.doe@example.com"
+                value={remediateIdentifier}
+                onChange={(e) => setRemediateIdentifier(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label
+                htmlFor="remediate-action"
+                className="text-[12px] text-muted-foreground"
+              >
+                Action
+              </label>
+
+              <select
+                id="remediate-action"
+                className="h-10 w-full rounded-sm border border-border bg-background px-3 text-sm"
+                value={remediateAction}
+                onChange={(e) =>
+                  setRemediateAction(
+                    e.target.value as "UPDATE" | "DELETE",
+                  )
+                }
+              >
+                <option value="UPDATE">Redact (SQL REPLACE)</option>
+
+                <option value="DELETE">Delete Row</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label
+                htmlFor="remediate-replacement"
+                className="text-[12px] text-muted-foreground"
+              >
+                Replacement Value
+              </label>
+
+              <input
+                id="remediate-replacement"
+                type="text"
+                className="h-10 w-full rounded-sm border border-border bg-background px-3 text-sm"
+                placeholder="[REDACTED]"
+                disabled={remediateAction !== "UPDATE"}
+                value={remediateReplacement}
+                onChange={(e) => setRemediateReplacement(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between">
+            <div>
+              {remediateResult ? (
+                <p className="text-[12px] text-primary">
+                  Success! Impacted {remediateResult.impacted_locations}{" "}
+                  location(s) and {remediateResult.impacted_rows} row(s).
+                </p>
+              ) : null}
+            </div>
+
+            <Button
+              onClick={() => void executeRemediation()}
+              disabled={busy !== "" || !remediateIdentifier}
+            >
+              {busy === "remediate"
+                ? "Executing..."
+                : "Execute Remediation"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       {/* Findings */}
       {selectedSource ? (
         <div className="overflow-hidden rounded-sm border border-border bg-card">
@@ -636,7 +805,7 @@ export default function DatabaseScannerPanel() {
                 ) : null}
 
                 {busy !== "findings" &&
-                findings.length === 0 ? (
+                  findings.length === 0 ? (
                   <tr>
                     <td
                       colSpan={7}
@@ -683,10 +852,9 @@ export default function DatabaseScannerPanel() {
 
                     <td className="px-4 py-2.5">
                       <span
-                        className={`rounded-sm px-2 py-0.5 text-[11px] font-medium uppercase ${
-                          riskColors[finding.risk] ||
+                        className={`rounded-sm px-2 py-0.5 text-[11px] font-medium uppercase ${riskColors[finding.risk] ||
                           riskColors.medium
-                        }`}
+                          }`}
                       >
                         {finding.risk}
                       </span>

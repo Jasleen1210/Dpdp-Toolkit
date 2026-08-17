@@ -20,3 +20,10 @@ class DatabaseSourceCreate(BaseModel):
     postgres_username: Optional[str] = Field(default=None, max_length=120)
     password_env_var: Optional[str] = Field(default=None, max_length=128)
     sslmode: Literal["disable", "prefer", "require", "verify-ca", "verify-full"] = "require"
+
+
+class DatabaseDataManageRequest(BaseModel):
+    """Payload to redact or delete data by identifier in a database."""
+    identifier: str = Field(min_length=1)
+    action: Literal["UPDATE", "DELETE"]
+    new_value: Optional[str] = Field(default=None)

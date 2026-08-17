@@ -6,7 +6,7 @@ from backend.api.identity.auth_org import (
     _require_org_membership,
     _require_session,
 )
-from backend.api.db_api.models import DatabaseSourceCreate
+from backend.api.db_api.models import DatabaseSourceCreate, DatabaseDataManageRequest
 from backend.services.db.service import (
     DatabaseServiceError,
     DatabaseSourceNotFoundError,
@@ -16,6 +16,7 @@ from backend.services.db.service import (
     list_database_scan_runs,
     list_database_sources,
     scan_database_source,
+    delete_update_database_source,
 )
 
 router = APIRouter(prefix="/database", tags=["database-discovery"])
@@ -88,6 +89,7 @@ async def add_configured_supabase_source(
 async def scan_source(
     source_id: str,
     organisation_id: str,
+    scan_auth: bool = Query(default=False),
     authorization: Optional[str] = Header(default=None),
 ):
     user = _require_database_admin(authorization, organisation_id)
@@ -96,6 +98,7 @@ async def scan_source(
             organisation_id=organisation_id,
             source_id=source_id,
             user_id=user["id"],
+            scan_auth=scan_auth,
         )
     except DatabaseSourceNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -139,3 +142,27 @@ async def get_scan_runs(
         }
     except DatabaseSourceNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/sources/{source_id}/delete-update")
+async def delete_update_source(
+    source_id: str,
+    organisation_id: str,
+    req: DatabaseDataManageRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    user = _require_database_admin(authorization, organisation_id)
+    try:
+        return delete_update_database_source(
+            organisation_id=organisation_id,
+            source_id=source_id,
+            user_id=user["id"],
+            identifier=req.identifier,
+            action=req.action,
+            new_value=req.new_value,
+        )
+    except DatabaseSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DatabaseServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
