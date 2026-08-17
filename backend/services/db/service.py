@@ -19,6 +19,7 @@ try:
         database_sources_collection,
     )
     from backend.services.db.scanner import scan_database
+    from backend.services.db.delete_update import manage_database_data
 except ImportError:
     from services.db.connector import (
         DatabaseConfigurationError,
@@ -34,6 +35,7 @@ except ImportError:
         database_sources_collection,
     )
     from services.db.scanner import scan_database
+    from services.db.delete_update import manage_database_data
 
 
 class DatabaseSourceNotFoundError(LookupError):
@@ -233,6 +235,7 @@ def scan_database_source(
     organisation_id: str,
     source_id: str,
     user_id: str,
+    scan_auth: bool = False,
 ) -> dict[str, Any]:
     source = _get_source_document(organisation_id, source_id)
     now = _now()
@@ -255,7 +258,7 @@ def scan_database_source(
     )
 
     try:
-        scan_result = scan_database(source["config"])
+        scan_result = scan_database(source["config"], scan_auth=scan_auth)
         findings = list(scan_result.get("findings", []))
         summary = _build_summary(scan_result)
         completed_at = _now()
@@ -386,3 +389,54 @@ def list_database_scan_runs(
         {"_id": 0},
     ).sort("started_at", -1).limit(safe_limit)
     return [_public_run(run) for run in runs]
+
+
+def delete_update_database_source(
+    *,
+    organisation_id: str,
+    source_id: str,
+    user_id: str,
+    identifier: str,
+    action: str,
+    new_value: str | None = None,
+) -> dict[str, Any]:
+    source = _get_source_document(organisation_id, source_id)
+    config = dict(source["config"])
+    config["organisation_id"] = organisation_id
+
+    try:
+        result = manage_database_data(config, identifier, action, new_value)
+        _write_audit(
+            organisation_id=organisation_id,
+            source_id=source_id,
+            user_id=user_id,
+            action=f"DATABASE_{action}_COMPLETED",
+            status="SUCCESS",
+            details={
+                "identifier": identifier,
+                "new_value": new_value,
+                "impacted_locations": result.get("impacted_locations", 0),
+                "impacted_rows": result.get("impacted_rows", 0),
+            },
+        )
+        return result
+    except (DatabaseConfigurationError, DatabaseConnectionError) as exc:
+        _write_audit(
+            organisation_id=organisation_id,
+            source_id=source_id,
+            user_id=user_id,
+            action=f"DATABASE_{action}_COMPLETED",
+            status="FAILED",
+            details={"message": str(exc)},
+        )
+        raise DatabaseServiceError(str(exc))
+    except Exception as exc:
+        _write_audit(
+            organisation_id=organisation_id,
+            source_id=source_id,
+            user_id=user_id,
+            action=f"DATABASE_{action}_COMPLETED",
+            status="FAILED",
+            details={"message": str(exc)},
+        )
+        raise DatabaseServiceError("Database edit failed unexpectedly.")

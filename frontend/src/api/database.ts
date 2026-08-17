@@ -166,11 +166,14 @@ export async function scanDatabaseSource(
   token: string | null,
   organisationId: string,
   sourceId: string,
+  scanAuth: boolean = false,
 ): Promise<DatabaseScanResponse> {
   return request<DatabaseScanResponse>(
     `/database/sources/${encodeURIComponent(
       sourceId,
-    )}/scan?organisation_id=${encodeURIComponent(organisationId)}`,
+    )}/scan?organisation_id=${encodeURIComponent(
+      organisationId,
+    )}&scan_auth=${scanAuth}`,
     token,
     {
       method: "POST",
@@ -194,5 +197,45 @@ export async function getDatabaseFindings(
       sourceId,
     )}/findings?organisation_id=${encodeURIComponent(organisationId)}`,
     token,
+  );
+}
+
+export async function deleteUpdateDatabaseSource(
+  token: string | null,
+  organisationId: string,
+  sourceId: string,
+  identifier: string,
+  action: "UPDATE" | "DELETE",
+  newValue: string | null,
+): Promise<{
+  action: "UPDATE" | "DELETE";
+  identifier: string;
+  status: string;
+  message: string;
+  impacted_locations: number;
+  impacted_rows: number;
+  new_value?: string | null;
+}> {
+  return request<{
+    action: "UPDATE" | "DELETE";
+    identifier: string;
+    status: string;
+    message: string;
+    impacted_locations: number;
+    impacted_rows: number;
+    new_value?: string | null;
+  }>(
+    `/database/sources/${encodeURIComponent(
+      sourceId,
+    )}/delete-update?organisation_id=${encodeURIComponent(organisationId)}`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        identifier,
+        action,
+        new_value: newValue,
+      }),
+    },
   );
 }

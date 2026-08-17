@@ -208,6 +208,56 @@ def open_read_only_connection(config: Mapping[str, Any]):
     raise DatabaseConfigurationError("Unsupported database engine.")
 
 
+def open_write_connection(config: Mapping[str, Any]):
+    """Open one SQLite or PostgreSQL connection with write capability for remediation."""
+    engine = config.get("engine")
+
+    if engine == "sqlite":
+        database_path = resolve_sqlite_database_path(str(config["sqlite_path"]))
+        try:
+            connection = sqlite3.connect(
+                database_path.as_posix(),
+                timeout=5,
+            )
+            return connection
+        except sqlite3.Error as exc:
+            raise DatabaseConnectionError("Could not open the SQLite database for writing.") from exc
+
+    if engine == "postgres":
+        password_env_var = str(config["password_env_var"])
+        password = os.getenv(password_env_var, "").strip()
+        if not password:
+            raise DatabaseConfigurationError(
+                f"The backend environment variable '{password_env_var}' is missing or empty."
+            )
+
+        try:
+            import psycopg
+        except ImportError as exc:
+            raise DatabaseConfigurationError(
+                "PostgreSQL support is not installed. Install psycopg[binary]."
+            ) from exc
+
+        try:
+            connection = psycopg.connect(
+                host=config["host"],
+                port=config["port"],
+                dbname=config["database"],
+                user=config["username"],
+                password=password,
+                sslmode=config["sslmode"],
+                connect_timeout=5,
+                autocommit=False,
+            )
+            return connection
+        except Exception as exc:
+            raise DatabaseConnectionError(
+                "Could not connect to PostgreSQL for writing."
+            ) from exc
+
+    raise DatabaseConfigurationError("Unsupported database engine.")
+
+
 def close_connection(connection: Any) -> None:
     """End a read transaction without committing anything, then close the connection."""
     if connection is None:
