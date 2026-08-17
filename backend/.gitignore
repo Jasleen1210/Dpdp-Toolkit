@@ -19,3 +19,6 @@ mock_gcp/
 
 # OS
 .DS_Store
+
+.venv/
+tempCodeRunnerFile.py

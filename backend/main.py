@@ -13,6 +13,12 @@ except Exception as exc:
     cloud_router = None
     logging.warning("Cloud router disabled: %s", exc)
 
+try:
+    from backend.api.db_api.routes import router as database_router
+except Exception as exc:
+    database_router = None
+    logging.warning("Database router disabled: %s", exc)
+
 from backend.api.agents.app import router as agent_router
 from backend.api.identity.auth_org import router as identity_router
 
@@ -42,6 +48,9 @@ async def health():
 
 if cloud_router is not None:
     app.include_router(cloud_router)
+
+if database_router is not None:
+    app.include_router(database_router)
 
 app.include_router(agent_router)
 app.include_router(identity_router)
