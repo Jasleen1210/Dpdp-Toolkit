@@ -3,7 +3,7 @@ import os
 from typing import List, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from backend.services.persistence.mongo import (
@@ -14,13 +14,10 @@ from backend.services.persistence.mongo import (
     request_tasks,
 )
 from backend.services.remediation import process_request
-from backend.api.agents.auth import _resolve_org_id, _validate_admin_key
+from backend.api.middleware import OrgAuthContext, resolve_org_context
+from backend.services.request_service import RequestStateManager
 
 router = APIRouter(prefix="/requests", tags=["Unified Data Subject Requests"])
-
-
-def _default_org_id() -> str:
-    return os.getenv("ORG_ID", "dpdp-org").strip() or "dpdp-org"
 
 
 def utc_now() -> datetime:
@@ -245,19 +242,17 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
 async def create_unified_request(
     payload: UnifiedDataSubjectRequest,
     background_tasks: BackgroundTasks,
-    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
-    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key"),
+    ctx: OrgAuthContext = Depends(resolve_org_context),
 ):
     """
-    Unified Data Subject Request Dispatcher:
+    Unified Data Subject Request Dispatcher (Org-Scoped):
     - Stores Master request into MongoDB FIRST (immediate < 5ms response)
-    - Queues local device tasks into request_tasks in MongoDB
+    - Queues local device tasks into request_tasks in MongoDB (org-filtered)
     - Spawns background task for Cloud (AWS/Azure/GCP) & Database processing
     - For DELETE requests: enters AWAITING_APPROVAL until approved
+    - Enforces org-level data isolation via OrgAuthContext
     """
-    org_id = _resolve_org_id(x_org_id, None) if x_org_id else _default_org_id()
-    if x_admin_key:
-        _validate_admin_key(x_admin_key, org_id)
+    org_id = ctx.org_id
 
     raw_type = payload.type.upper()
     canonical_type = {"ACCESS": "access", "UPDATE": "correction", "DELETE": "erasure"}[raw_type]
@@ -322,8 +317,14 @@ async def create_unified_request(
     # 2. Dispatch Local Device Tasks (e.g. Athena) into request_tasks
     local_tasks = []
     if "local" in target_sources:
-        local_tasks = _dispatch_local_device_tasks(
-            master_doc, org_id, payload.device_ids, expires_at
+        local_tasks = RequestStateManager.create_local_device_tasks(
+            request_id=request_id,
+            org_id=org_id,
+            request_type=canonical_type,
+            identifier=payload.identifier,
+            new_value=payload.new_value,
+            device_ids=payload.device_ids,
+            expires_at=expires_at,
         )
 
     # 3. Schedule background processing for Cloud & DB
@@ -361,19 +362,21 @@ async def create_unified_request(
 
 @router.get("")
 async def list_unified_requests(
-    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ctx: OrgAuthContext = Depends(resolve_org_context),
 ):
-    """Returns all data subject requests with real-time status across Cloud and Local devices."""
-    query = {}
-    if x_org_id:
-        try:
-            resolved = _resolve_org_id(x_org_id, None)
-            query = {"$or": [{"org_id": resolved}, {"organisation_id": resolved}]}
-        except Exception:
-            query = {}
-
+    """
+    Returns all data subject requests with real-time status across Cloud and Local devices.
+    Org-scoped: Users only see their organization's requests.
+    """
+    org_id = ctx.org_id
+    
     try:
-        data = list(data_subject_requests.find(query, {"_id": 0}).sort("created_at", -1))
+        data = list(
+            data_subject_requests.find(
+                RequestStateManager.build_request_list_query(org_id),
+                {"_id": 0}
+            ).sort("created_at", -1)
+        )
     except Exception as e:
         print(f"Error reading data_subject_requests: {e}")
         data = []
@@ -381,7 +384,12 @@ async def list_unified_requests(
     # Single-roundtrip batch lookup for all tasks
     request_ids = [r.get("id") for r in data if r.get("id")]
     try:
-        all_tasks = list(request_tasks.find({"request_id": {"$in": request_ids}}, {"_id": 0})) if request_ids else []
+        all_tasks = list(
+            request_tasks.find(
+                {"request_id": {"$in": request_ids}, "org_id": org_id},
+                {"_id": 0}
+            )
+        ) if request_ids else []
     except Exception as e:
         print(f"Error reading request_tasks: {e}")
         all_tasks = []
@@ -516,156 +524,97 @@ async def list_unified_requests(
 @router.get("/{request_id}")
 async def get_unified_request_detail(
     request_id: str,
-    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ctx: OrgAuthContext = Depends(resolve_org_context),
 ):
-    """Returns complete end-to-end details, local task findings, and cloud results for a specific request."""
-    req_query = {"id": request_id}
-    if x_org_id:
-        try:
-            resolved = _resolve_org_id(x_org_id, None)
-            req_query = {"id": request_id, "$or": [{"org_id": resolved}, {"organisation_id": resolved}]}
-        except Exception:
-            pass
-
-    req = data_subject_requests.find_one(req_query, {"_id": 0})
-    if not req:
+    """
+    Returns complete end-to-end details, local task findings, and cloud results.
+    Org-scoped: Returns 404 if request doesn't belong to user's org.
+    """
+    org_id = ctx.org_id
+    
+    result = RequestStateManager.get_request_with_tasks(request_id, org_id)
+    if not result:
         raise HTTPException(status_code=404, detail="Request not found")
-
-    tasks = list(request_tasks.find({"request_id": request_id}, {"_id": 0}))
-    task_ids = [t["id"] for t in tasks]
-
-    results = list(
-        pii_classifications.find(
-            {
-                "$or": [
-                    {"request_task_id": {"$in": task_ids}},
-                    {"task_id": {"$in": task_ids}},
-                    {"request_id": request_id},
-                ],
-            },
-            {"_id": 0},
-        )
-    )
-
-    local_results_map = {
-        r.get("request_task_id") or r.get("task_id"): r
-        for r in results
-        if r.get("source_type") == "local_device"
-    }
-    cloud_results = [r for r in results if r.get("source_type") == "cloud_storage"]
-
-    enriched_tasks = []
-    for t in tasks:
-        r = local_results_map.get(t["id"])
-        matches = r.get("matches", []) if r else []
-        enriched_tasks.append({
-            "task_id": t["id"],
-            "device_id": t.get("device_id"),
-            "status": t.get("status", "pending"),
-            "query": t.get("query"),
-            "type": t.get("type"),
-            "scanned_files": r.get("scanned_files", 0) if r else 0,
-            "matches_count": len(matches),
-            "pii_types": sorted({m.get("type", "") for m in matches if m.get("type")}),
-            "matches": matches,
-            "delete_replacements": r.get("delete_replacements", []) if r else [],
-            "completed_at": t.get("completed_at"),
-        })
-
-    return {
-        "request": req,
-        "local_tasks": enriched_tasks,
-        "cloud_results": cloud_results,
-    }
+    
+    return result
 
 
 @router.post("/{request_id}/approve")
 async def approve_unified_request(
     request_id: str,
-    x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ctx: OrgAuthContext = Depends(resolve_org_context),
 ):
-    """Approves an awaiting request, triggering remediation and finalizing status across cloud and local."""
-    req = data_subject_requests.find_one({"id": request_id}, {"_id": 0})
+    """
+    Approves an awaiting DELETE request, triggering remediation across cloud and local.
+    Only org admins/owners can approve.
+    Org-scoped: Returns 404 if request doesn't belong to user's org.
+    """
+    org_id = ctx.org_id
+    
+    # Verify user has permission to approve (admin or owner)
+    if not ctx.is_admin_or_owner():
+        raise HTTPException(status_code=403, detail="Only admins can approve requests")
+    
+    req = data_subject_requests.find_one(
+        RequestStateManager.build_request_list_query(org_id, {"id": request_id}),
+        {"_id": 0}
+    )
+    
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    if not req.get("requires_approval"):
+        raise HTTPException(status_code=400, detail="This request does not require approval")
+    
     now = utc_now()
-
-    if req:
-        org_id = req.get("org_id") or req.get("organisation_id") or _default_org_id()
-        cloud_result = _process_cloud_sources(req, org_id)
-
-        data_subject_requests.update_one(
-            {"id": request_id},
-            {
-                "$set": {
-                    "status": "completed",
-                    "approved_at": now,
-                    "updated_at": now,
-                    "closed_at": now,
-                }
-            },
-        )
-
-        # Also complete associated local device tasks if any
-        request_tasks.update_many(
-            {"request_id": request_id},
-            {
-                "$set": {
-                    "status": "completed",
-                    "completed_at": now,
-                    "updated_at": now,
-                }
-            },
-        )
-
-        audit_logs.insert_one({
-            "actor_type": "user",
-            "actor_id": "portal-admin",
-            "entity_type": "data_subject_request",
-            "org_id": org_id,
-            "action": "APPROVE_REQUEST",
-            "request_id": request_id,
-            "timestamp": now,
-            "status": "SUCCESS",
+    
+    cloud_result = {}
+    if "cloud" in req.get("target_sources", []):
+        cloud_result = process_request({
+            "id": request_id,
+            "type": req.get("type", "access").upper(),
+            "identifier": req.get("identifier"),
+            "new_value": req.get("new_value"),
         })
 
-        return {
-            "message": "Request approved and executed across storage.",
-            "request_id": request_id,
-            "cloud_result": cloud_result,
-        }
-
-    # Fallback: check if it's a standalone task in request_tasks
-    task = request_tasks.find_one({"id": request_id}, {"_id": 0})
-    if task:
-        org_id = task.get("org_id") or task.get("organisation_id") or _default_org_id()
-        request_tasks.update_one(
-            {"id": request_id},
-            {
-                "$set": {
-                    "status": "completed",
-                    "completed_at": now,
-                    "updated_at": now,
-                }
-            },
-        )
-
-        # Trigger cloud remediation if identifier exists
-        cloud_result = {}
-        query_val = task.get("query", "")
-        if query_val:
-            raw_id = query_val.split("::")[0] if "::" in query_val else query_val
-            new_val = query_val.split("::")[1] if "::" in query_val else None
-            cloud_req = {
-                "id": request_id,
-                "type": (task.get("type") or "access").upper(),
-                "identifier": raw_id,
-                "new_value": new_val,
+    data_subject_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {
+                "status": "completed",
+                "approved_at": now,
+                "updated_at": now,
+                "closed_at": now,
             }
-            cloud_result = process_request(cloud_req)
+        },
+    )
 
-        return {
-            "message": "Task approved and marked completed.",
-            "request_id": request_id,
-            "cloud_result": cloud_result,
-        }
+    # Also complete associated local device tasks if any
+    request_tasks.update_many(
+        {"request_id": request_id, "org_id": org_id},
+        {
+            "$set": {
+                "status": "completed",
+                "completed_at": now,
+                "updated_at": now,
+            }
+        },
+    )
 
-    raise HTTPException(status_code=404, detail="Request not found")
+    audit_logs.insert_one({
+        "actor_type": "user",
+        "actor_id": ctx.user_id,
+        "entity_type": "data_subject_request",
+        "org_id": org_id,
+        "action": "APPROVE_REQUEST",
+        "request_id": request_id,
+        "timestamp": now,
+        "status": "SUCCESS",
+    })
+
+    return {
+        "status": "success",
+        "message": "Request approved and executed across storage.",
+        "request_id": request_id,
+        "cloud_result": cloud_result,
+    }

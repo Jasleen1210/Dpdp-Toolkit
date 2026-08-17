@@ -8,6 +8,7 @@ import {
   Lock,
   ExternalLink,
   Layers,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -61,6 +62,11 @@ export default function CloudPanel() {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [connectSuccess, setConnectSuccess] = useState<string | null>(null);
 
+  // Delete Modal State
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [sourceToDelete, setSourceToDelete] = useState<ConnectedSource | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+
   const fetchSources = async () => {
     try {
       const res = await fetch(`${API}/cloud/sources`);
@@ -69,6 +75,33 @@ export default function CloudPanel() {
         if (data.sources) setSources(data.sources);
       }
     } catch {}
+  };
+
+  const handleDeleteSource = async () => {
+    if (!sourceToDelete) return;
+
+    setDeleteLoading(true);
+    try {
+      const res = await fetch(`${API}/cloud/sources/${sourceToDelete.id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.detail || "Failed to delete cloud source");
+      }
+
+      setStatusMessage(`Successfully removed connection to ${sourceToDelete.provider} (${sourceToDelete.bucket}).`);
+      await fetchSources();
+      setIsDeleteConfirmOpen(false);
+      setSourceToDelete(null);
+
+      setTimeout(() => setStatusMessage(null), 4000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   const fetchExistingResults = async () => {
@@ -259,9 +292,21 @@ export default function CloudPanel() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-foreground">{s.provider}</span>
-                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] uppercase font-mono">
-                    <CheckCircle2 className="h-2.5 w-2.5" /> Connected
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] uppercase font-mono">
+                      <CheckCircle2 className="h-2.5 w-2.5" /> Connected
+                    </span>
+                    <button
+                      onClick={() => {
+                        setSourceToDelete(s);
+                        setIsDeleteConfirmOpen(true);
+                      }}
+                      className="p-1 hover:bg-destructive/20 text-muted-foreground hover:text-destructive rounded-sm transition-colors"
+                      title="Delete this connection"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="font-mono text-[11px] text-muted-foreground truncate" title={s.bucket}>
                   {s.bucket}
@@ -402,6 +447,78 @@ export default function CloudPanel() {
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {isDeleteConfirmOpen && sourceToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm bg-card border border-border rounded-sm shadow-xl overflow-hidden">
+            <div className="flex items-center justify-between p-3.5 border-b border-border bg-destructive/5">
+              <div className="flex items-center gap-2">
+                <Trash2 className="h-4 w-4 text-destructive" />
+                <h2 className="text-sm font-semibold text-foreground">Remove Cloud Connection</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteConfirmOpen(false);
+                  setSourceToDelete(null);
+                }}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 text-[12px]">
+              <div>
+                <p className="text-foreground font-medium mb-2">Are you sure you want to remove this connection?</p>
+                <div className="bg-muted/30 rounded-sm p-2.5 border border-border/50 space-y-1 mb-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Provider:</span>
+                    <span className="font-mono text-foreground">{sourceToDelete.provider}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Bucket:</span>
+                    <span className="font-mono text-foreground truncate" title={sourceToDelete.bucket}>
+                      {sourceToDelete.bucket}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Region:</span>
+                    <span className="font-mono text-foreground">{sourceToDelete.region}</span>
+                  </div>
+                </div>
+                <p className="text-[11px] text-amber-400 flex items-start gap-1.5 p-2 bg-amber-500/10 rounded-sm border border-amber-500/30">
+                  <span className="mt-0.5">⚠️</span>
+                  <span>This action is permanent. Connected data and scan results will be removed.</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-border p-3.5 bg-muted/20">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDeleteConfirmOpen(false);
+                  setSourceToDelete(null);
+                }}
+                className="px-3 py-1.5 text-[12px] rounded-sm border border-border text-foreground hover:bg-muted/50 transition-colors"
+                disabled={deleteLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteSource}
+                className="px-3 py-1.5 text-[12px] rounded-sm bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors font-medium disabled:opacity-50"
+                disabled={deleteLoading}
+              >
+                {deleteLoading ? "Removing..." : "Remove Connection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Dialog for Connect Cloud Provider */}
       {isConnectOpen && (

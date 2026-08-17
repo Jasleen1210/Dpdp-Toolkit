@@ -41,6 +41,7 @@ type AuthState = {
   token: string | null;
   user: User | null;
   organisations: OrganisationCredential[];
+  currentOrgId: string | null;  // Current selected organization
   loading: boolean;
   error: string | null;
   mode: "guest" | "user" | null;
@@ -66,6 +67,7 @@ const initialState: AuthState = {
   token: localStorage.getItem("auth_token"),
   user: null,
   organisations: readStoredOrganisations(),
+  currentOrgId: localStorage.getItem("auth_current_org_id"),  // Restore current org
   loading: false,
   error: null,
   mode: (localStorage.getItem("auth_mode") as "guest" | "user" | null) || null,
@@ -211,6 +213,14 @@ const authSlice = createSlice({
         JSON.stringify(action.payload),
       );
     },
+    setCurrentOrg(state, action: { payload: string | null }) {
+      state.currentOrgId = action.payload;
+      if (action.payload) {
+        localStorage.setItem("auth_current_org_id", action.payload);
+      } else {
+        localStorage.removeItem("auth_current_org_id");
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -270,6 +280,6 @@ const authSlice = createSlice({
   },
 });
 
-export const { setSession, clearSession, signInAsGuest, setOrganisations } =
+export const { setSession, clearSession, signInAsGuest, setOrganisations, setCurrentOrg } =
   authSlice.actions;
 export default authSlice.reducer;

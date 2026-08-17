@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from datetime import datetime, timedelta
@@ -20,15 +20,9 @@ from backend.services.pii_detection import detect_pii_full
 from backend.services.pii import build_pii_summary
 
 from backend.services.remediation import process_request
+from backend.api.middleware import OrgAuthContext, resolve_org_context
 
 router = APIRouter(prefix="/cloud")
-
-
-def _cloud_org_id() -> str:
-    """Cloud routes are currently service-authenticated; retain the configured org scope."""
-    import os
-
-    return os.getenv("ORG_ID", "dpdp-org").strip() or "dpdp-org"
 
 
 def _cloud_data_source(obj: dict) -> dict:
@@ -340,21 +334,77 @@ class CloudConnectRequest(BaseModel):
 
 
 @router.get("/sources")
-async def list_cloud_sources():
-    """Lists all configured and connected cloud storage sources."""
+async def list_cloud_sources(ctx: OrgAuthContext = Depends(resolve_org_context)):
+    """Lists all configured and connected cloud storage sources (org-scoped)."""
     sources = list(
         data_sources.find(
-            {"source_type": "cloud_storage"},
+            {
+                "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}],
+                "source_type": "cloud_storage"
+            },
             {"_id": 0, "secret_access_key": 0, "connection_string": 0},
         ).sort("created_at", -1)
     )
     return {"sources": sources}
 
 
+@router.delete("/sources/{source_id}")
+async def delete_cloud_source(
+    source_id: str,
+    ctx: OrgAuthContext = Depends(resolve_org_context),
+):
+    """Permanently removes a cloud storage connection and associated data (org-scoped)."""
+    # Find the source first (must belong to user's org)
+    source = data_sources.find_one({
+        "id": source_id,
+        "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}],
+        "source_type": "cloud_storage"
+    })
+    if not source:
+        raise HTTPException(status_code=404, detail="Cloud source not found")
+    
+    provider_name = source.get("provider", "Unknown")
+    bucket_name = source.get("bucket", "unknown").replace("cloud://", "")
+    region_name = source.get("region", "unknown")
+    
+    # Delete from data_sources
+    data_sources.delete_one({"id": source_id, "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}]})
+    
+    # Delete associated PII classifications
+    pii_classifications.delete_many({
+        "data_source_id": source_id,
+        "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}]
+    })
+    
+    # Log the deletion
+    audit_logs.insert_one({
+        "actor_type": "user",
+        "actor_id": ctx.user_id,
+        "entity_type": "cloud_data_source",
+        "org_id": ctx.org_id,
+        "action": "DELETE_CLOUD_PROVIDER",
+        "provider": provider_name,
+        "bucket": bucket_name,
+        "region": region_name,
+        "source_id": source_id,
+        "timestamp": datetime.now(),
+        "status": "SUCCESS",
+    })
+    
+    return {
+        "status": "success",
+        "message": f"Successfully removed connection to {provider_name} ({bucket_name}).",
+        "source_id": source_id,
+    }
+
+
 @router.post("/connect")
-async def connect_cloud_provider(req: CloudConnectRequest):
-    """Registers and establishes a secure connection to a client's cloud storage provider."""
-    org_id = _cloud_org_id()
+async def connect_cloud_provider(
+    req: CloudConnectRequest,
+    ctx: OrgAuthContext = Depends(resolve_org_context),
+):
+    """Registers and establishes a secure connection to a client's cloud storage provider (org-scoped)."""
+    org_id = ctx.org_id
     provider_name = req.provider.strip()
     bucket_name = req.bucket_or_container.strip().replace("s3://", "").replace("gs://", "").replace("azure://", "")
     region_name = req.region.strip()
@@ -415,7 +465,7 @@ async def connect_cloud_provider(req: CloudConnectRequest):
 
     audit_logs.insert_one({
         "actor_type": "user",
-        "actor_id": "portal-admin",
+        "actor_id": ctx.user_id,
         "entity_type": "cloud_data_source",
         "org_id": org_id,
         "action": "CONNECT_CLOUD_PROVIDER",
