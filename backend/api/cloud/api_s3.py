@@ -25,9 +25,8 @@ from backend.api.middleware import OrgAuthContext, resolve_org_context
 router = APIRouter(prefix="/cloud")
 
 
-def _cloud_data_source(obj: dict) -> dict:
+def _cloud_data_source(obj: dict, org_id: str) -> dict:
     """Make each cloud connection a first-class, reusable data source."""
-    org_id = _cloud_org_id()
     source_key = "::".join(str(obj.get(key, "")) for key in ("provider", "bucket", "region"))
     now = datetime.now()
     data_sources.update_one(
@@ -69,8 +68,8 @@ def build_match_summary(matches):
     }
 
 @router.get("/requests")
-def get_requests():
-    org_id = _cloud_org_id()
+def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
+    org_id = ctx.org_id
     data = list(data_subject_requests.find({"$or": [{"org_id": org_id}, {"organisation_id": org_id}]}, {"_id": 0}).sort("created_at", -1))
 
     formatted = []
@@ -149,7 +148,7 @@ def get_requests():
 
 # create a request 
 @router.post("/requests")
-async def create_request(req: DataSubjectRequest):
+async def create_request(req: DataSubjectRequest, ctx: OrgAuthContext = Depends(resolve_org_context)):
     request_type = req.type.upper()
     if request_type not in {"ACCESS", "UPDATE", "DELETE"}:
         raise HTTPException(
@@ -167,7 +166,7 @@ async def create_request(req: DataSubjectRequest):
     now = datetime.now()
     new_req = {
         "id": str(uuid4()),
-        "org_id": _cloud_org_id(),
+        "org_id": ctx.org_id,
         "request_type": canonical_type,
         "data_principal": {"identifier_hash": req.identifier.lower()},
         "verification_status": "verified",
@@ -209,8 +208,8 @@ async def create_request(req: DataSubjectRequest):
     return {"request": new_req, "result": result }
 
 @router.post("/requests/{request_id}/approve")
-async def approve_request(request_id: str):
-    req = data_subject_requests.find_one({"id": request_id})
+async def approve_request(request_id: str, ctx: OrgAuthContext = Depends(resolve_org_context)):
+    req = data_subject_requests.find_one({"id": request_id, "org_id": ctx.org_id})
 
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -218,7 +217,7 @@ async def approve_request(request_id: str):
     result = process_request(req)
 
     data_subject_requests.update_one(
-        {"id": request_id},
+        {"id": request_id, "org_id": ctx.org_id},
         {"$set": {"status": "completed", "approved_at": datetime.now(), "updated_at": datetime.now(), "closed_at": datetime.now()}}
     )
 
@@ -229,12 +228,12 @@ async def approve_request(request_id: str):
 
 
 @router.post("/scan-cloud")
-async def scan_cloud():
+async def scan_cloud(ctx: OrgAuthContext = Depends(resolve_org_context)):
     cloud_objects = list_cloud_objects()
     current_files = [obj["file"] for obj in cloud_objects]
     results = []
 
-    pii_classifications.delete_many({"org_id": _cloud_org_id(), "source_type": "cloud_storage", "file": {"$nin": current_files}})
+    pii_classifications.delete_many({"org_id": ctx.org_id, "source_type": "cloud_storage", "file": {"$nin": current_files}})
 
     for obj in cloud_objects:
         path = obj["file"]
@@ -247,10 +246,10 @@ async def scan_cloud():
 
         pii_result = detect_pii_full(file_data)["pii"]
 
-        source = _cloud_data_source(obj)
+        source = _cloud_data_source(obj, ctx.org_id)
         doc = {
             **obj,
-            "org_id": _cloud_org_id(),
+            "org_id": ctx.org_id,
             "data_source_id": source["id"],
             "source_type": "cloud_storage",
             "location": path,
@@ -260,7 +259,7 @@ async def scan_cloud():
 
         # Store in MongoDB (UPSERT)
         pii_classifications.update_one(
-            {"org_id": _cloud_org_id(), "data_source_id": source["id"], "location": path},
+            {"org_id": ctx.org_id, "data_source_id": source["id"], "location": path},
             {
                 "$set": doc,
                 "$unset": {"detected_values": ""},
@@ -269,7 +268,7 @@ async def scan_cloud():
         )
         results.append(doc)
 
-    scan_jobs.insert_one({"id": str(uuid4()), "org_id": _cloud_org_id(), "source_type": "cloud_storage", "status": "completed", "task_type": "classification", "started_at": datetime.now(), "completed_at": datetime.now(), "result_summary": {"records_found": len(results), "locations": current_files}})
+    scan_jobs.insert_one({"id": str(uuid4()), "org_id": ctx.org_id, "source_type": "cloud_storage", "status": "completed", "task_type": "classification", "started_at": datetime.now(), "completed_at": datetime.now(), "result_summary": {"records_found": len(results), "locations": current_files}})
     return {
         "message": "Cloud platforms scanned successfully",
         "total_files": len(results),
@@ -280,8 +279,8 @@ async def scan_cloud():
 
 # Get all scanned results
 @router.get("/results")
-async def get_results():
-    data = list(pii_classifications.find({"org_id": _cloud_org_id(), "source_type": "cloud_storage"}, {"_id": 0}))
+async def get_results(ctx: OrgAuthContext = Depends(resolve_org_context)):
+    data = list(pii_classifications.find({"org_id": ctx.org_id, "source_type": "cloud_storage"}, {"_id": 0}))
     return {"results": data}
 
 
@@ -291,7 +290,7 @@ class SearchRequest(BaseModel):
 
 
 @router.post("/search")
-async def search_data(req: SearchRequest):
+async def search_data(req: SearchRequest, ctx: OrgAuthContext = Depends(resolve_org_context)):
     query = req.query.lower()
     matched_files = []
 
@@ -493,7 +492,7 @@ async def root():
 
 # Logs
 @router.get("/logs")
-async def get_logs():
-    logs = list(audit_logs.find({}, {"_id": 0}))
+async def get_logs(ctx: OrgAuthContext = Depends(resolve_org_context)):
+    logs = list(audit_logs.find({"org_id": ctx.org_id}, {"_id": 0}))
     return {"logs": logs}
 

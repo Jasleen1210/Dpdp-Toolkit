@@ -6,33 +6,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# adding three retries to prevent dns issues when connecting to Atlas
 
 def _use_mock_db() -> bool:
     return os.getenv("USE_MOCK_DB", "").strip() == "1"
 
 
-def _configure_dns_resolvers():
-    """Configures public DNS resolvers (8.8.8.8, 1.1.1.1) to avoid local SRV DNS timeouts on Windows."""
-    try:
-        import dns.resolver
-        resolver = dns.resolver.Resolver()
-        resolver.nameservers = ["8.8.8.8", "1.1.1.1", "8.8.4.4"]
-        resolver.timeout = 5.0
-        resolver.lifetime = 10.0
-        dns.resolver.default_resolver = resolver
-    except Exception:
-        pass
-
-
 def _make_client():
     if _use_mock_db():
         import mongomock
-
+        print("[MongoDB] Using mock database (USE_MOCK_DB=1)")
         return mongomock.MongoClient()
 
-    _configure_dns_resolvers()
-
     from pymongo import MongoClient, ReadPreference
+    import time
 
     atlas_url = os.getenv("ATLAS_URL", "").strip()
     if not atlas_url:
@@ -40,19 +27,39 @@ def _make_client():
         import mongomock
         return mongomock.MongoClient()
 
-    try:
-        return MongoClient(
-            atlas_url,
-            serverSelectionTimeoutMS=8000,
-            connectTimeoutMS=8000,
-            socketTimeoutMS=10000,
-            retryWrites=True,
-            read_preference=ReadPreference.PRIMARY_PREFERRED,
-        )
-    except Exception as exc:
-        print(f"[MongoDB] Failed to connect to Atlas ({exc}). Falling back to local mongomock.")
-        import mongomock
-        return mongomock.MongoClient()
+    # Retry logic for DNS/network timeouts
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            print(f"[MongoDB] Attempting connection (attempt {attempt + 1}/{max_retries})...")
+            client = MongoClient(
+                atlas_url,
+                serverSelectionTimeoutMS=25000,  # 25 seconds
+                connectTimeoutMS=25000,
+                socketTimeoutMS=30000,
+                retryWrites=True,
+                read_preference=ReadPreference.PRIMARY_PREFERRED,
+                directConnection=False,
+                appName="dpdp-app",
+                
+                maxPoolSize=50,
+                minPoolSize=10,
+            )
+            # Test connection
+            client.server_info()
+            print("[MongoDB] ✅ Connected to Atlas successfully")
+            return client
+        except Exception as exc:
+            error_msg = str(exc)
+            print(f"[MongoDB] Attempt {attempt + 1} failed: {error_msg}")
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                print(f"[MongoDB] Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"[MongoDB] All {max_retries} attempts failed. Falling back to local mongomock.")
+                import mongomock
+                return mongomock.MongoClient()
 
 
 client = _make_client()
