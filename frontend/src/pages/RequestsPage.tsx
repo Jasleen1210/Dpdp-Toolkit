@@ -18,12 +18,14 @@ import { Link, useLocation } from "react-router-dom";
 import type { DSRRequest } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { getAuthHeaders } from "@/api/auth-headers";
+import { useAppSelector } from "@/redux/hooks";
 
 const subtabs = [
   { label: "All Requests", href: "/requests" },
   { label: "Delete Requests", href: "/requests/delete" },
   { label: "Access Requests", href: "/requests/access" },
-  { label: "Correction Requests", href: "/requests/correction" },
+  { label: "Update Requests", href: "/requests/update" },
   { label: "Workflow Queue", href: "/requests/queue" },
 ];
 
@@ -35,9 +37,10 @@ const statusColors: Record<string, string> = {
   completed: "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
   rejected: "bg-destructive/15 text-destructive border-destructive/30",
   awaiting_approval: "bg-warning/15 text-warning border-warning/30",
+  error: "bg-destructive/15 text-destructive border-destructive/30",
 };
 
-const formatLabel = (value: string) => value.replaceAll("_", " ");
+const formatLabel = (value: string) => value.replace(/_/g, " ");
 
 function SubtabNav() {
   const location = useLocation();
@@ -86,6 +89,7 @@ interface DetailedTask {
   matches_count: number;
   pii_types: string[];
   matches: Array<{ type?: string; value?: string; file?: string; location?: string }>;
+  status_reason?: string;
   delete_replacements?: Array<{
     file: string;
     original_value: string;
@@ -105,6 +109,7 @@ interface RequestDetailData {
     action_taken?: string;
     status?: string;
   }>;
+  status_message?: string;
 }
 
 function RequestCard({
@@ -113,12 +118,14 @@ function RequestCard({
   onToggle,
   onApprove,
   approving,
+  authHeaders,
 }: {
   request: DSRRequest;
   expanded: boolean;
   onToggle: () => void;
   onApprove: (id: string) => void;
   approving: boolean;
+  authHeaders: Record<string, string>;
 }) {
   const isAwaitingApproval = Boolean(request.requires_approval) && request.status === "awaiting_approval";
   const targetTag = getTargetBadge(request);
@@ -131,7 +138,7 @@ function RequestCard({
     const fetchDetail = async () => {
       setLoadingDetail(true);
       try {
-        const res = await fetch(`${API}/requests/${request.id}`);
+        const res = await fetch(`${API}/requests/${request.id}`, { headers: authHeaders });
         if (res.ok) {
           const data = await res.json();
           if (!cancelled) setDetail(data);
@@ -183,7 +190,6 @@ function RequestCard({
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
               <span className="font-mono-data">ID: {request.id}</span>
               <span>Submitted: {request.created}</span>
-              <span>SLA: {request.sla_remaining}</span>
               {request.devices && request.devices.length > 0 && (
                 <span>Devices: {request.devices.join(", ")}</span>
               )}
@@ -255,6 +261,10 @@ function RequestCard({
                       </div>
                     )}
 
+                    {t.status_reason && (
+                      <div className="text-warning">{t.status_reason}</div>
+                    )}
+
                     {t.matches && t.matches.length > 0 && (
                       <div className="mt-1 space-y-1 bg-muted/40 p-2 rounded-sm font-mono text-[10px]">
                         <div className="text-muted-foreground font-semibold uppercase text-[9px]">Matches Found:</div>
@@ -270,6 +280,23 @@ function RequestCard({
               </div>
             </div>
           )}
+
+          <div className="rounded-sm border border-border bg-muted/20 px-3 py-2 text-[11px]">
+            <div className="font-semibold text-foreground">Processing update</div>
+            <div className="mt-1 text-muted-foreground">
+              {request.status_message || "Status is being synchronized from the selected sources."}
+            </div>
+            {request.source_status && Object.keys(request.source_status).length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {Object.entries(request.source_status).map(([source, sourceStatus]) => (
+                  <span key={source} className="rounded-sm border border-border px-2 py-0.5 uppercase text-[10px]">
+                    {source}: {sourceStatus}
+                  </span>
+                ))}
+              </div>
+            )}
+            {request.cloud_error && <div className="mt-1 text-destructive">Cloud: {request.cloud_error}</div>}
+          </div>
 
                   {detail && detail.cloud_results && detail.cloud_results.length > 0 && (
             <div className="space-y-1 pt-1">
@@ -338,22 +365,13 @@ function Detail({
   );
 }
 
-async function fetchRequests(): Promise<DSRRequest[]> {
+async function fetchRequests(token: string | null, orgId: string | null): Promise<DSRRequest[]> {
   const headers: Record<string, string> = {};
-  const token = localStorage.getItem("auth_token");
   if (token && !token.startsWith("guest_")) {
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  try {
-    const rawOrgs = localStorage.getItem("auth_organisations");
-    if (rawOrgs) {
-      const orgs = JSON.parse(rawOrgs);
-      if (Array.isArray(orgs) && orgs.length > 0 && orgs[0].id) {
-        headers["X-Org-Id"] = orgs[0].id;
-      }
-    }
-  } catch { }
+  if (orgId) headers["X-Org-Id"] = orgId;
 
   try {
     const res = await fetch(`${API}/requests`, { headers });
@@ -400,11 +418,23 @@ export default function RequestsPage() {
   const [createTarget, setCreateTarget] = useState<"all" | "local" | "cloud" | "db">("all");
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const authToken = useAppSelector((state) => state.auth.token);
+  const currentOrgId = useAppSelector((state) => state.auth.currentOrgId);
+  const authHeaders = useMemo(() => {
+    if (!authToken || authToken.startsWith("guest_") || !currentOrgId) return {};
+    return getAuthHeaders(authToken, currentOrgId);
+  }, [authToken, currentOrgId]);
 
   const loadData = async (showLoading = false) => {
     if (showLoading) setIsRefreshing(true);
+    if (!authToken || authToken.startsWith("guest_") || !currentOrgId) {
+      setRequests([]);
+      setInitialLoading(false);
+      if (showLoading) setIsRefreshing(false);
+      return;
+    }
     try {
-      const data = await fetchRequests();
+      const data = await fetchRequests(authToken, currentOrgId);
       setRequests(data);
     } catch (err) {
       console.error("Failed to load requests:", err);
@@ -418,24 +448,11 @@ export default function RequestsPage() {
     void loadData(true);
     const interval = window.setInterval(() => void loadData(false), 5000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [authToken, currentOrgId]);
 
   const handleApprove = async (id: string) => {
     setApprovingId(id);
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const token = localStorage.getItem("auth_token");
-    if (token && !token.startsWith("guest_")) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-    try {
-      const rawOrgs = localStorage.getItem("auth_organisations");
-      if (rawOrgs) {
-        const orgs = JSON.parse(rawOrgs);
-        if (Array.isArray(orgs) && orgs.length > 0 && orgs[0].id) {
-          headers["X-Org-Id"] = orgs[0].id;
-        }
-      }
-    } catch { }
+    const headers: Record<string, string> = { ...authHeaders, "Content-Type": "application/json" };
 
     try {
       const res = await fetch(`${API}/requests/${id}/approve`, {
@@ -465,27 +482,14 @@ export default function RequestsPage() {
       return;
     }
     if (createType === "update" && !createNewValue.trim()) {
-      setCreateError("New value is required for correction requests");
+      setCreateError("New value is required for update requests");
       return;
     }
 
     setCreateLoading(true);
     setCreateError(null);
 
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const token = localStorage.getItem("auth_token");
-    if (token && !token.startsWith("guest_")) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-    try {
-      const rawOrgs = localStorage.getItem("auth_organisations");
-      if (rawOrgs) {
-        const orgs = JSON.parse(rawOrgs);
-        if (Array.isArray(orgs) && orgs.length > 0 && orgs[0].id) {
-          headers["X-Org-Id"] = orgs[0].id;
-        }
-      }
-    } catch { }
+    const headers: Record<string, string> = { ...authHeaders, "Content-Type": "application/json" };
 
     try {
       const payload = {
@@ -493,6 +497,7 @@ export default function RequestsPage() {
         identifier: createIdentifier.trim(),
         new_value: createType === "update" ? createNewValue.trim() : undefined,
         target: createTarget,
+        ...(currentOrgId ? { org_id: currentOrgId } : {}),
       };
 
       const res = await fetch(`${API}/requests`, {
@@ -521,13 +526,13 @@ export default function RequestsPage() {
   const currentPath = location.pathname.toLowerCase().replace(/\/$/, "");
   const baseFiltered = useMemo(() => {
     if (currentPath.endsWith("/delete")) {
-      return requests.filter((r) => r.type === "delete" || r.type === "erasure");
+      return requests.filter((r) => r.type === "delete");
     }
     if (currentPath.endsWith("/access")) {
       return requests.filter((r) => r.type === "access");
     }
-    if (currentPath.endsWith("/correction")) {
-      return requests.filter((r) => r.type === "update" || r.type === "correction");
+    if (currentPath.endsWith("/update") || currentPath.endsWith("/correction")) {
+      return requests.filter((r) => r.type === "update");
     }
     if (currentPath.endsWith("/queue")) {
       return requests.filter((r) =>
@@ -558,16 +563,23 @@ export default function RequestsPage() {
     // Type filter
     if (selectedType !== "all") {
       list = list.filter((r) => {
-        if (selectedType === "delete") return r.type === "delete" || r.type === "erasure";
+        if (selectedType === "delete") return r.type === "delete";
         if (selectedType === "access") return r.type === "access";
-        if (selectedType === "update") return r.type === "update" || r.type === "correction";
+        if (selectedType === "update") return r.type === "update";
         return true;
       });
     }
 
     // Status filter
     if (selectedStatus !== "all") {
-      list = list.filter((r) => r.status === selectedStatus);
+      list = list.filter((r) => {
+        if (selectedStatus === "awaiting_approval") {
+          return r.status === "awaiting_approval" || (
+            r.status === "pending" && r.requires_approval
+          );
+        }
+        return r.status === selectedStatus;
+      });
     }
 
     // Target filter
@@ -729,9 +741,9 @@ export default function RequestsPage() {
               className="h-8 rounded-sm border border-border bg-background px-2 text-[12px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
             >
               <option value="all">All Types</option>
-              <option value="delete">Erasure (Delete)</option>
+              <option value="delete">Delete</option>
               <option value="access">Access</option>
-              <option value="update">Correction (Update)</option>
+              <option value="update">Update</option>
             </select>
           </div>
 
@@ -749,6 +761,7 @@ export default function RequestsPage() {
               <option value="in_progress">In Progress</option>
               <option value="completed">Completed</option>
               <option value="rejected">Rejected</option>
+              <option value="error">Error</option>
             </select>
           </div>
 
@@ -817,7 +830,7 @@ export default function RequestsPage() {
           </div>
         ) : filteredAndSorted.length ? (
           filteredAndSorted.map((request) => (
-            <RequestCard
+              <RequestCard
               key={request.id}
               request={request}
               expanded={!!expandedIds[request.id]}
@@ -829,6 +842,7 @@ export default function RequestsPage() {
               }
               onApprove={handleApprove}
               approving={approvingId === request.id}
+                authHeaders={authHeaders}
             />
           ))
         ) : (
@@ -890,9 +904,9 @@ export default function RequestsPage() {
                 <div className="grid grid-cols-3 gap-2">
                   {(
                     [
-                      { key: "delete", label: "Erasure (Delete)" },
+                      { key: "delete", label: "Delete" },
                       { key: "access", label: "Access" },
-                      { key: "update", label: "Correction (Update)" },
+                      { key: "update", label: "Update" },
                     ] as const
                   ).map((t) => (
                     <button

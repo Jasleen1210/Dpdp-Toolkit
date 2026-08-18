@@ -114,6 +114,8 @@ class RequestStateManager:
         
         if normalized in {"rejected", "cancelled"}:
             return "rejected"
+        if normalized in {"error", "failed"}:
+            return "error"
         
         # DELETE requests show approval state explicitly
         if requires_approval:
@@ -150,6 +152,22 @@ class RequestStateManager:
             return "completed"
         
         return normalized if normalized in {"pending", "in_progress"} else "in_progress"
+
+    @staticmethod
+    def build_status_message(source_status: dict) -> str:
+        """Return a user-facing explanation of the current source work."""
+        if not source_status:
+            return "No scan sources were selected."
+        errors = [source for source, state in source_status.items() if state == "error"]
+        queued = [source for source, state in source_status.items() if state in {"queued", "in_progress"}]
+        skipped = [source for source, state in source_status.items() if state == "skipped"]
+        if errors:
+            return f"Scan error on {', '.join(errors)}. Review the source details."
+        if queued:
+            return f"Waiting for scan results from {', '.join(queued)}."
+        if skipped:
+            return f"Completed with {', '.join(skipped)} source(s) skipped."
+        return "All selected sources finished scanning."
     
     @staticmethod
     def filter_org_devices(org_id: str, device_ids: Optional[List[str]] = None) -> List[dict]:
@@ -172,7 +190,7 @@ class RequestStateManager:
         if device_ids:
             query["device_id"] = {"$in": device_ids}
         
-        return list(data_sources.find(query, {"_id": 0, "device_id": 1, "id": 1}))
+        return list(data_sources.find(query, {"_id": 0, "device_id": 1, "id": 1, "last_seen": 1}))
     
     @staticmethod
     def create_local_device_tasks(
@@ -195,7 +213,7 @@ class RequestStateManager:
             return []
         
         action_type = request_type.lower()
-        if action_type == "update" or action_type == "correction":
+        if action_type == "update":
             packed_query = f"{identifier}::{new_value or ''}"
         else:
             packed_query = identifier

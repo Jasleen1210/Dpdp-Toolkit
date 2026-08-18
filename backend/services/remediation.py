@@ -266,6 +266,6 @@ def process_request(req):
     elif raw_type in ("UPDATE", "CORRECTION"):
         new_val = req.get("new_value")
         if not new_val:
-            return {"error": "new_value required for update/correction"}
+            return {"error": "new_value required for update"}
         return update_data(identifier, new_val)
     return {"error": f"Unknown request type {raw_type}"}

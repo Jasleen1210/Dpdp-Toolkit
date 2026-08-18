@@ -29,15 +29,10 @@ def _model_to_dict(model) -> dict:
     return model.dict(exclude_none=True)
 
 
-def _require_database_admin(authorization: Optional[str], organisation_id: str) -> dict:
-    """Only owner/admin users may add a source or inspect a database."""
+def _require_database_member(authorization: Optional[str], organisation_id: str) -> dict:
+    """Require a signed-in member of the organization for database access."""
     user = _require_session(authorization)
-    membership = _require_org_membership(user["id"], organisation_id)
-    if membership.get("role") not in {"owner", "admin"}:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only organisation owners or admins can manage database sources.",
-        )
+    _require_org_membership(user["id"], organisation_id)
     return user
 
 
@@ -46,7 +41,7 @@ async def get_sources(
     organisation_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
-    _require_database_admin(authorization, organisation_id)
+    _require_database_member(authorization, organisation_id)
     return {"sources": list_database_sources(organisation_id)}
 
 
@@ -55,7 +50,7 @@ async def add_source(
     req: DatabaseSourceCreate,
     authorization: Optional[str] = Header(default=None),
 ):
-    user = _require_database_admin(authorization, req.organisation_id)
+    user = _require_database_member(authorization, req.organisation_id)
     try:
         source = create_database_source(
             organisation_id=req.organisation_id,
@@ -73,7 +68,7 @@ async def add_configured_supabase_source(
     organisation_id: str,
     authorization: Optional[str] = Header(default=None),
 ):
-    user = _require_database_admin(authorization, organisation_id)
+    user = _require_database_member(authorization, organisation_id)
 
     try:
         source = create_configured_supabase_source(
@@ -92,7 +87,7 @@ async def scan_source(
     scan_auth: bool = Query(default=False),
     authorization: Optional[str] = Header(default=None),
 ):
-    user = _require_database_admin(authorization, organisation_id)
+    user = _require_database_member(authorization, organisation_id)
     try:
         return scan_database_source(
             organisation_id=organisation_id,
@@ -113,7 +108,7 @@ async def get_findings(
     limit: int = Query(default=500, ge=1, le=1000),
     authorization: Optional[str] = Header(default=None),
 ):
-    _require_database_admin(authorization, organisation_id)
+    _require_database_member(authorization, organisation_id)
     try:
         return list_database_findings(
             organisation_id=organisation_id,
@@ -131,7 +126,7 @@ async def get_scan_runs(
     limit: int = Query(default=20, ge=1, le=100),
     authorization: Optional[str] = Header(default=None),
 ):
-    _require_database_admin(authorization, organisation_id)
+    _require_database_member(authorization, organisation_id)
     try:
         return {
             "runs": list_database_scan_runs(
@@ -151,7 +146,7 @@ async def delete_update_source(
     req: DatabaseDataManageRequest,
     authorization: Optional[str] = Header(default=None),
 ):
-    user = _require_database_admin(authorization, organisation_id)
+    user = _require_database_member(authorization, organisation_id)
     try:
         return delete_update_database_source(
             organisation_id=organisation_id,

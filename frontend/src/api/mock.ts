@@ -141,7 +141,7 @@ export async function fetchDataSources(): Promise<DataSource[]> {
 //   return [
 //     { id: "DSR-442", type: "delete", subject: "user@example.com", status: "pending", created: "15m ago", sla_remaining: "29d 23h", handler: "auto" },
 //     { id: "DSR-441", type: "access", subject: "XXXX-XXXX-8891", status: "in_progress", created: "2h ago", sla_remaining: "28d 12h", handler: "manual" },
-//     { id: "DSR-440", type: "correction", subject: "admin@corp.in", status: "completed", created: "1d ago", sla_remaining: "—", handler: "auto" },
+//     { id: "DSR-440", type: "update", subject: "admin@corp.in", status: "completed", created: "1d ago", sla_remaining: "—", handler: "auto" },
 //     { id: "DSR-439", type: "delete", subject: "XXXX-XXXX-2234", status: "pending", created: "1d ago", sla_remaining: "27d 8h", handler: "manual" },
 //     { id: "DSR-438", type: "access", subject: "legal@firm.co.in", status: "rejected", created: "3d ago", sla_remaining: "—", handler: "manual" },
 //   ];

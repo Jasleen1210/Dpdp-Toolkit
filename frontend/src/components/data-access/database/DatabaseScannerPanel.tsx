@@ -84,6 +84,10 @@ export default function DatabaseScannerPanel() {
 
       setOrganisations(response.organisations);
 
+      if (!response.organisations.length) {
+        setError("You are not in an organisation yet. Join an organisation from Profile using an invite code, then try again.");
+      }
+
       setOrganisationId((current) => {
         if (
           current &&

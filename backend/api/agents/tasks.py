@@ -41,7 +41,7 @@ def _create_data_subject_request(
 ) -> str:
     """Create the master request once; individual sources receive request_tasks."""
     request_id = str(uuid4())
-    canonical_type = {"update": "correction", "delete": "erasure"}.get(request_type.lower(), request_type.lower())
+    canonical_type = request_type.lower()
     data_subject_requests.insert_one({
         "id": request_id,
         "org_id": org_id,

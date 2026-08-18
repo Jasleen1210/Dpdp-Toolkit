@@ -14,8 +14,9 @@ from backend.services.persistence.mongo import (
     request_tasks,
 )
 from backend.services.remediation import process_request
-from backend.api.middleware import OrgAuthContext, resolve_org_context
+from backend.api.middleware import OrgAuthContext, resolve_org_context, resolve_org_context_optional
 from backend.services.request_service import RequestStateManager
+from backend.api.agents.helpers import _is_device_active
 
 router = APIRouter(prefix="/requests", tags=["Unified Data Subject Requests"])
 
@@ -35,6 +36,10 @@ def normalize_request_status(status: Optional[str], tasks: Optional[list] = None
 
     if normalized in {"rejected", "cancelled"}:
         return "rejected"
+    if normalized in {"error", "failed"}:
+        return "error"
+    if normalized == "awaiting_approval":
+        return "awaiting_approval"
 
     if requires_approval:
         return "awaiting_approval" if normalized in {"awaiting_approval", "pending", "in_progress", ""} else normalized
@@ -73,6 +78,9 @@ class UnifiedDataSubjectRequest(BaseModel):
     )
     expires_in_hours: int = Field(
         default=24, ge=1, le=720, description="Task expiration window in hours"
+    )
+    org_id: Optional[str] = Field(
+        default=None, description="Organization for unauthenticated API callers"
     )
 
 
@@ -146,9 +154,10 @@ def _dispatch_local_device_tasks(
     if device_ids:
         device_filter["device_id"] = {"$in": device_ids}
 
-    target_devices = list(
-        data_sources.find(device_filter, {"_id": 0, "device_id": 1, "id": 1})
-    )
+    target_devices = list(data_sources.find(
+        device_filter,
+        {"_id": 0, "device_id": 1, "id": 1, "last_seen": 1},
+    ))
     if not target_devices:
         return []
 
@@ -169,6 +178,7 @@ def _dispatch_local_device_tasks(
         task_id = str(uuid4())
         data_source_id = dev.get("id") or dev_id
 
+        is_active = _is_device_active(dev.get("last_seen"))
         task_doc = {
             "id": task_id,
             "request_id": req_doc["id"],
@@ -180,17 +190,19 @@ def _dispatch_local_device_tasks(
             "source_type": "local_device",
             "query": packed_query,
             "type": action_type,
-            "status": "pending",
+            "status": "pending" if is_active else "skipped",
+            "status_reason": None if is_active else "Device is inactive and did not receive this request",
             "created_at": now,
             "expires_at": expires_at,
             "updated_at": now,
-            "completed_at": None,
+            "completed_at": None if is_active else now,
         }
         request_tasks.insert_one(task_doc)
         created.append({
             "task_id": task_id,
             "device_id": dev_id,
-            "status": "pending",
+            "status": task_doc["status"],
+            "status_reason": task_doc["status_reason"],
             "expires_at": expires_at.isoformat(),
         })
 
@@ -217,21 +229,37 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
         )
 
         cloud_res = None
+        source_status = {}
         if "cloud" in target_sources and not master_doc.get("requires_approval"):
             cloud_res = _process_cloud_sources(master_doc, org_id)
+            source_status["cloud"] = "error" if cloud_res.get("error") else "completed"
 
         if "db" in target_sources:
-            _dispatch_database_sources(master_doc, org_id)
+            db_res = _dispatch_database_sources(master_doc, org_id)
+            source_status["db"] = "error" if db_res.get("error") else "completed"
 
         update_fields = {"updated_at": utc_now()}
         if cloud_res and isinstance(cloud_res, dict):
             update_fields["cloud_results"] = cloud_res.get("locations", [])
+            if cloud_res.get("error"):
+                update_fields["cloud_error"] = cloud_res["error"]
+        if "local" in target_sources:
+            local_tasks = list(request_tasks.find({"request_id": request_id}, {"_id": 0, "status": 1}))
+            source_status["local"] = "queued" if any(t.get("status") == "pending" for t in local_tasks) else "completed"
+        update_fields["source_status"] = source_status
+        update_fields["status_message"] = RequestStateManager.build_status_message(source_status)
 
         if "local" not in target_sources and not master_doc.get("requires_approval"):
-            update_fields["status"] = "completed"
+            update_fields["status"] = "error" if "error" in source_status.values() else "completed"
             update_fields["closed_at"] = utc_now()
         elif not master_doc.get("requires_approval"):
-            update_fields["status"] = "in_progress"
+            if "error" in source_status.values():
+                update_fields["status"] = "error"
+            elif source_status and all(value == "completed" for value in source_status.values()):
+                update_fields["status"] = "completed"
+                update_fields["closed_at"] = utc_now()
+            else:
+                update_fields["status"] = "in_progress"
 
         data_subject_requests.update_one({"id": request_id}, {"$set": update_fields})
     except Exception as exc:
@@ -242,7 +270,7 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
 async def create_unified_request(
     payload: UnifiedDataSubjectRequest,
     background_tasks: BackgroundTasks,
-    ctx: OrgAuthContext = Depends(resolve_org_context),
+    ctx: Optional[OrgAuthContext] = Depends(resolve_org_context_optional),
 ):
     """
     Unified Data Subject Request Dispatcher (Org-Scoped):
@@ -252,10 +280,12 @@ async def create_unified_request(
     - For DELETE requests: enters AWAITING_APPROVAL until approved
     - Enforces org-level data isolation via OrgAuthContext
     """
-    org_id = ctx.org_id
+    org_id = (ctx.org_id if ctx else (payload.org_id or "").strip())
+    if not org_id:
+        raise HTTPException(status_code=400, detail="org_id is required for unauthenticated API requests")
 
     raw_type = payload.type.upper()
-    canonical_type = {"ACCESS": "access", "UPDATE": "correction", "DELETE": "erasure"}[raw_type]
+    canonical_type = {"ACCESS": "access", "UPDATE": "update", "DELETE": "delete"}[raw_type]
 
     if raw_type == "UPDATE" and not payload.new_value:
         raise HTTPException(
@@ -303,10 +333,11 @@ async def create_unified_request(
         "verification_status": "verified",
         "submitted_via": "api",
         "status": "AWAITING_APPROVAL" if requires_approval else "pending",
+        "source_status": {source: "awaiting_approval" if requires_approval else "queued" for source in target_sources},
+        "status_message": "Waiting for approval before execution." if requires_approval else "Request saved. Preparing scans.",
         "target_sources": target_sources,
         "source_types": source_types_list,
         "requires_approval": requires_approval,
-        "sla_due_at": now + timedelta(days=30),
         "created_at": now,
         "updated_at": now,
     }
@@ -470,7 +501,6 @@ async def list_unified_requests(
             "type": display_type,
             "subject": subject,
             "status": status,
-            "sla_remaining": "48h",
             "handler": " | ".join(sources_summary) or "auto-system",
             "created": created_str,
             "created_at": created_iso,
@@ -479,12 +509,18 @@ async def list_unified_requests(
             "target_sources": resolved_targets,
             "source_types": source_types,
             "requires_approval": bool(r.get("requires_approval")),
+            "source_status": r.get("source_status", {}),
+            "status_message": r.get("status_message") or RequestStateManager.build_status_message({"request": status}),
+            "cloud_error": r.get("cloud_error"),
         })
 
     known_request_ids = set(request_ids)
     orphan_tasks = list(
         request_tasks.find(
-            {"request_id": {"$nin": list(known_request_ids)}},
+            {
+                "request_id": {"$nin": list(known_request_ids)},
+                "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+            },
             {"_id": 0},
         ).sort("created_at", -1)
     )
@@ -507,7 +543,6 @@ async def list_unified_requests(
             "type": t.get("type", "access"),
             "subject": t.get("query") or "Local File Request",
             "status": t.get("status", "pending"),
-            "sla_remaining": "48h",
             "handler": f"Local ({t.get('device_id', 'local_device')})",
             "created": created_str,
             "created_at": created_iso,
@@ -577,26 +612,37 @@ async def approve_unified_request(
             "new_value": req.get("new_value"),
         })
 
+    local_tasks = list(request_tasks.find(
+        {
+            "request_id": request_id,
+            "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+        },
+        {"_id": 0, "status": 1},
+    ))
+    has_pending_local = any(
+        task.get("status") in {"pending", "in_progress"} for task in local_tasks
+    )
+    cloud_failed = isinstance(cloud_result, dict) and bool(cloud_result.get("error"))
+    next_status = "error" if cloud_failed else "in_progress" if has_pending_local else "completed"
+    source_status = {
+        source: (
+            "error" if source == "cloud" and cloud_failed else
+            "queued" if source == "local" and has_pending_local else
+            "completed"
+        )
+        for source in req.get("target_sources", [])
+    }
+
     data_subject_requests.update_one(
-        {"id": request_id},
+        RequestStateManager.build_request_list_query(org_id, {"id": request_id}),
         {
             "$set": {
-                "status": "completed",
+                "status": next_status,
+                "source_status": source_status,
+                "status_message": RequestStateManager.build_status_message(source_status),
                 "approved_at": now,
                 "updated_at": now,
-                "closed_at": now,
-            }
-        },
-    )
-
-    # Also complete associated local device tasks if any
-    request_tasks.update_many(
-        {"request_id": request_id, "org_id": org_id},
-        {
-            "$set": {
-                "status": "completed",
-                "completed_at": now,
-                "updated_at": now,
+                **({} if next_status == "in_progress" else {"closed_at": now}),
             }
         },
     )
@@ -614,7 +660,11 @@ async def approve_unified_request(
 
     return {
         "status": "success",
-        "message": "Request approved and executed across storage.",
+        "message": (
+            "Request approved. Cloud processing completed; waiting for local device results."
+            if has_pending_local and not cloud_failed
+            else "Request approved and executed across the selected sources."
+        ),
         "request_id": request_id,
         "cloud_result": cloud_result,
     }

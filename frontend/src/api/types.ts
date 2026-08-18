@@ -31,10 +31,9 @@ export interface DSRRequest {
   id: string;
   type: "delete" | "access" | "update";
   subject: string;
-  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval";
+  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval" | "error";
   created: string;
   created_at?: string;
-  sla_remaining: string;
   handler: "auto" | "manual" | string;
   devices?: string[];
   tasks_count?: number;
@@ -42,6 +41,9 @@ export interface DSRRequest {
   source_types?: string[];
   target_sources?: string[];
   requires_approval?: boolean;
+  source_status?: Record<string, string>;
+  status_message?: string;
+  cloud_error?: string;
 }
 
 export interface Vendor {

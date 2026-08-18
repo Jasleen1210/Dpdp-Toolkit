@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Depends
 from pydantic import BaseModel
 
 from datetime import datetime, timedelta
@@ -21,6 +21,7 @@ from backend.services.pii import build_pii_summary
 
 from backend.services.remediation import process_request
 from backend.api.middleware import OrgAuthContext, resolve_org_context
+from backend.api.unified_requests import UnifiedDataSubjectRequest, create_unified_request
 
 router = APIRouter(prefix="/cloud")
 
@@ -135,7 +136,6 @@ def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
             "type": display_type,
             "subject": subject,
             "status": status,
-            "sla_remaining": "48h",
             "handler": handler_str,
             "created": created_str,
             "devices": device_ids,
@@ -148,64 +148,22 @@ def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
 
 # create a request 
 @router.post("/requests")
-async def create_request(req: DataSubjectRequest, ctx: OrgAuthContext = Depends(resolve_org_context)):
-    request_type = req.type.upper()
-    if request_type not in {"ACCESS", "UPDATE", "DELETE"}:
-        raise HTTPException(
-            status_code=400,
-            detail="type must be one of ACCESS, UPDATE, or DELETE",
-        )
-
-    if request_type == "UPDATE" and not req.new_value:
-        raise HTTPException(
-            status_code=400,
-            detail="new_value is required for UPDATE requests",
-        )
-
-    canonical_type = {"ACCESS": "access", "UPDATE": "correction", "DELETE": "erasure"}[request_type]
-    now = datetime.now()
-    new_req = {
-        "id": str(uuid4()),
-        "org_id": ctx.org_id,
-        "request_type": canonical_type,
-        "data_principal": {"identifier_hash": req.identifier.lower()},
-        "verification_status": "verified",
-        "submitted_via": "api",
-        "type": request_type,
-        "identifier": req.identifier,
-        "new_value": req.new_value,
-        "status": "PENDING",
-        "created_at": now,
-        "updated_at": now,
-        "sla_due_at": now + timedelta(days=30),
-        "requires_approval": request_type == "DELETE"
-    }
-
-    data_subject_requests.insert_one(new_req)
-
-    new_req.pop("_id", None)
-    result = None
-    if not new_req["requires_approval"]:
-        result = process_request(new_req)
-        new_req["status"] = "COMPLETED"
-        data_subject_requests.update_one(
-            {"id": new_req["id"]},
-            {"$set": {"status": "COMPLETED"}}
-        )
-    else:
-        new_req["status"] = "AWAITING_APPROVAL"
-        data_subject_requests.update_one(
-            {"id": new_req["id"]},
-            {"$set": {"status": "AWAITING_APPROVAL"}}
-        )
-        result = {
-            "action": "DELETE",
-            "identifier": new_req["identifier"],
-            "status": "AWAITING_APPROVAL",
-            "message": "Delete request has been submitted and is awaiting approval. It will be processed within 24-48 hours.",
-        }
-
-    return {"request": new_req, "result": result }
+async def create_request(
+    req: DataSubjectRequest,
+    background_tasks: BackgroundTasks,
+    ctx: OrgAuthContext = Depends(resolve_org_context),
+):
+    payload = UnifiedDataSubjectRequest(
+        type=req.type,
+        identifier=req.identifier,
+        new_value=req.new_value,
+        target="cloud",
+    )
+    return await create_unified_request(
+        payload,
+        background_tasks,
+        ctx,
+    )
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: str, ctx: OrgAuthContext = Depends(resolve_org_context)):
@@ -215,14 +173,26 @@ async def approve_request(request_id: str, ctx: OrgAuthContext = Depends(resolve
         raise HTTPException(status_code=404, detail="Request not found")
 
     result = process_request(req)
+    local_tasks = list(request_tasks.find(
+        {"request_id": request_id, "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}]},
+        {"_id": 0, "status": 1},
+    ))
+    has_pending_local = any(task.get("status") in {"pending", "in_progress"} for task in local_tasks)
 
     data_subject_requests.update_one(
         {"id": request_id, "org_id": ctx.org_id},
-        {"$set": {"status": "completed", "approved_at": datetime.now(), "updated_at": datetime.now(), "closed_at": datetime.now()}}
+        {"$set": {
+            "status": "in_progress" if has_pending_local else "completed",
+            "source_status": {"cloud": "completed", "local": "queued" if has_pending_local else "completed"},
+            "status_message": "Cloud processing completed. Waiting for local device results." if has_pending_local else "All selected sources finished scanning.",
+            "approved_at": datetime.now(),
+            "updated_at": datetime.now(),
+            **({} if has_pending_local else {"closed_at": datetime.now()}),
+        }}
     )
 
     return {
-        "message": "Approved and executed. Matching data was removed from cloud locations.",
+        "message": "Approved. Cloud processing completed; local devices are still processing." if has_pending_local else "Approved and executed across the selected sources.",
         "result": result,
     }
 
