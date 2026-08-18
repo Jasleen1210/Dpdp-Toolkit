@@ -251,17 +251,18 @@ def _scan_sqlite(connection: Any, sample_limit: int, max_tables: int) -> dict[st
     }
 
 
-def _postgres_table_names(connection: Any, max_tables: int, scan_auth: bool = False) -> list[tuple[str, str]]:
+def _postgres_table_names(connection: Any, max_tables: int, allowed_schemas: list[str] | None = None) -> list[tuple[str, str]]:
     with connection.cursor() as cursor:
-        if scan_auth:
+        if allowed_schemas:
+            schema_placeholders = ", ".join(["%s"] * len(allowed_schemas))
             cursor.execute(
                 "SELECT table_schema, table_name "
                 "FROM information_schema.tables "
                 "WHERE table_type = 'BASE TABLE' "
-                "AND table_schema IN ('public', 'auth') "
+                f"AND table_schema IN ({schema_placeholders}) "
                 "ORDER BY table_schema, table_name "
                 "LIMIT %s",
-                (max_tables,),
+                (*allowed_schemas, max_tables),
             )
         else:
             cursor.execute(
@@ -269,7 +270,6 @@ def _postgres_table_names(connection: Any, max_tables: int, scan_auth: bool = Fa
                 "FROM information_schema.tables "
                 "WHERE table_type = 'BASE TABLE' "
                 "AND table_schema = 'public' "
-                "AND table_name NOT LIKE '%%auth%%' "
                 "ORDER BY table_schema, table_name "
                 "LIMIT %s",
                 (max_tables,),
@@ -277,12 +277,12 @@ def _postgres_table_names(connection: Any, max_tables: int, scan_auth: bool = Fa
         return [(str(row[0]), str(row[1])) for row in cursor.fetchall()]
 
 
-def _scan_postgres(connection: Any, sample_limit: int, max_tables: int, scan_auth: bool = False) -> dict[str, Any]:
+def _scan_postgres(connection: Any, sample_limit: int, max_tables: int, allowed_schemas: list[str] | None = None) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     warnings: list[str] = []
     inspected_columns = 0
     sampled_values = 0
-    tables = _postgres_table_names(connection, max_tables, scan_auth=scan_auth)
+    tables = _postgres_table_names(connection, max_tables, allowed_schemas=allowed_schemas)
 
     for schema_name, raw_table_name in tables:
         try:
@@ -342,7 +342,7 @@ def _scan_postgres(connection: Any, sample_limit: int, max_tables: int, scan_aut
     }
 
 
-def scan_database(config: Mapping[str, Any], scan_auth: bool = False) -> dict[str, Any]:
+def scan_database(config: Mapping[str, Any], allowed_schemas: list[str] | None = None) -> dict[str, Any]:
     """Scan one saved source. The returned object contains aggregate metadata only."""
     sample_limit = _environment_int("DB_SCAN_SAMPLE_LIMIT", 50, 1, 500)
     max_tables = _environment_int("DB_SCAN_MAX_TABLES", 100, 1, 500)
@@ -352,7 +352,7 @@ def scan_database(config: Mapping[str, Any], scan_auth: bool = False) -> dict[st
         if config.get("engine") == "sqlite":
             result = _scan_sqlite(connection, sample_limit, max_tables)
         elif config.get("engine") == "postgres":
-            result = _scan_postgres(connection, sample_limit, max_tables, scan_auth=scan_auth)
+            result = _scan_postgres(connection, sample_limit, max_tables, allowed_schemas=allowed_schemas)
         else:
             raise DatabaseConfigurationError("Unsupported database engine.")
     finally:

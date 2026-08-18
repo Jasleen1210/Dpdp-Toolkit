@@ -235,7 +235,6 @@ def scan_database_source(
     organisation_id: str,
     source_id: str,
     user_id: str,
-    scan_auth: bool = False,
 ) -> dict[str, Any]:
     source = _get_source_document(organisation_id, source_id)
     now = _now()
@@ -258,7 +257,7 @@ def scan_database_source(
     )
 
     try:
-        scan_result = scan_database(source["config"], scan_auth=scan_auth)
+        scan_result = scan_database(source["config"])
         findings = list(scan_result.get("findings", []))
         summary = _build_summary(scan_result)
         completed_at = _now()

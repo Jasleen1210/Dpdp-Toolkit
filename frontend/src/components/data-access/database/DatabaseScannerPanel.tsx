@@ -270,7 +270,6 @@ export default function DatabaseScannerPanel() {
         token,
         organisationId,
         selectedSourceId,
-        scanAuth,
       );
 
       setFindings(response.findings);

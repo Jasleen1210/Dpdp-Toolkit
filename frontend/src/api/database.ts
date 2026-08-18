@@ -166,14 +166,13 @@ export async function scanDatabaseSource(
   token: string | null,
   organisationId: string,
   sourceId: string,
-  scanAuth: boolean = false,
 ): Promise<DatabaseScanResponse> {
   return request<DatabaseScanResponse>(
     `/database/sources/${encodeURIComponent(
       sourceId,
     )}/scan?organisation_id=${encodeURIComponent(
       organisationId,
-    )}&scan_auth=${scanAuth}`,
+    )}`,
     token,
     {
       method: "POST",
