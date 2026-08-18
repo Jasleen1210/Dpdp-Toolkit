@@ -17,6 +17,12 @@ from backend.services.remediation import process_request
 from backend.api.middleware import OrgAuthContext, resolve_org_context, resolve_org_context_optional
 from backend.services.request_service import RequestStateManager
 from backend.api.agents.helpers import _is_device_active
+from backend.services.db.service import (
+    DatabaseServiceError,
+    list_database_sources,
+    scan_database_source,
+    delete_update_database_source,
+)
 
 router = APIRouter(prefix="/requests", tags=["Unified Data Subject Requests"])
 
@@ -209,13 +215,51 @@ def _dispatch_local_device_tasks(
     return created
 
 
-def _dispatch_database_sources(req_doc: dict, org_id: str) -> dict:
-    """Extensible handler for database source queries (PostgreSQL, MySQL, MongoDB)."""
-    return {
-        "status": "completed",
-        "message": "Database scanning connector checked tables.",
-        "records_affected": 0,
-    }
+def _process_database_sources(
+    req_doc: dict,
+    org_id: str,
+    user_id: str,
+    allow_destructive: bool = False,
+) -> dict:
+    """Execute the request against every configured database source in the org."""
+    action = str(req_doc.get("type", "access")).lower()
+    results = []
+    errors = []
+    for source in list_database_sources(org_id):
+        source_id = source["id"]
+        try:
+            if action == "access":
+                result = scan_database_source(
+                    organisation_id=org_id,
+                    source_id=source_id,
+                    user_id=user_id,
+                )
+                results.append({
+                    "source_id": source_id,
+                    "display_name": source.get("display_name"),
+                    "status": "completed",
+                    "summary": result.get("summary", {}),
+                    "findings": result.get("findings", []),
+                })
+            elif action in {"update", "delete"}:
+                if not allow_destructive:
+                    results.append({"source_id": source_id, "status": "awaiting_approval"})
+                    continue
+                result = delete_update_database_source(
+                    organisation_id=org_id,
+                    source_id=source_id,
+                    user_id=user_id,
+                    identifier=req_doc["identifier"],
+                    action=action.upper(),
+                    new_value=req_doc.get("new_value"),
+                )
+                results.append({"source_id": source_id, "status": "completed", **result})
+        except DatabaseServiceError as exc:
+            errors.append({"source_id": source_id, "display_name": source.get("display_name"), "error": str(exc)})
+            results.append({"source_id": source_id, "status": "error", "error": str(exc)})
+    if not results:
+        errors.append({"error": "No database sources are configured for this organization."})
+    return {"results": results, "errors": errors, "source_count": len(results)}
 
 
 def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
@@ -223,33 +267,48 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
     request_id = master_doc["id"]
     try:
         now = utc_now()
-        data_subject_requests.update_one(
-            {"id": request_id},
-            {"$set": {"status": "in_progress", "updated_at": now}},
-        )
+        if not master_doc.get("requires_approval"):
+            data_subject_requests.update_one(
+                {"id": request_id},
+                {"$set": {"status": "in_progress", "updated_at": now}},
+            )
 
         cloud_res = None
         source_status = {}
+        update_fields = {"updated_at": utc_now()}
         if "cloud" in target_sources and not master_doc.get("requires_approval"):
             cloud_res = _process_cloud_sources(master_doc, org_id)
             source_status["cloud"] = "error" if cloud_res.get("error") else "completed"
+        elif "cloud" in target_sources:
+            source_status["cloud"] = "awaiting_approval"
 
         if "db" in target_sources:
-            db_res = _dispatch_database_sources(master_doc, org_id)
-            source_status["db"] = "error" if db_res.get("error") else "completed"
+            db_res = _process_database_sources(
+                master_doc,
+                org_id,
+                master_doc.get("created_by_user_id", "request-engine"),
+                allow_destructive=not master_doc.get("requires_approval"),
+            )
+            update_fields["db_results"] = db_res.get("results", [])
+            if db_res.get("errors"):
+                update_fields["db_errors"] = db_res["errors"]
+            source_status["db"] = "error" if db_res.get("errors") else (
+                "awaiting_approval" if master_doc.get("requires_approval") else "completed"
+            )
 
-        update_fields = {"updated_at": utc_now()}
         if cloud_res and isinstance(cloud_res, dict):
             update_fields["cloud_results"] = cloud_res.get("locations", [])
             if cloud_res.get("error"):
                 update_fields["cloud_error"] = cloud_res["error"]
         if "local" in target_sources:
             local_tasks = list(request_tasks.find({"request_id": request_id}, {"_id": 0, "status": 1}))
-            source_status["local"] = "queued" if any(t.get("status") == "pending" for t in local_tasks) else "completed"
+            source_status["local"] = "queued" if any(t.get("status") in {"pending", "in_progress"} for t in local_tasks) else "completed"
         update_fields["source_status"] = source_status
         update_fields["status_message"] = RequestStateManager.build_status_message(source_status)
 
-        if "local" not in target_sources and not master_doc.get("requires_approval"):
+        if master_doc.get("requires_approval"):
+            update_fields["status"] = "awaiting_approval"
+        elif "local" not in target_sources:
             update_fields["status"] = "error" if "error" in source_status.values() else "completed"
             update_fields["closed_at"] = utc_now()
         elif not master_doc.get("requires_approval"):
@@ -332,6 +391,7 @@ async def create_unified_request(
         },
         "verification_status": "verified",
         "submitted_via": "api",
+        "created_by_user_id": ctx.user_id if ctx else "request-engine",
         "status": "AWAITING_APPROVAL" if requires_approval else "pending",
         "source_status": {source: "awaiting_approval" if requires_approval else "queued" for source in target_sources},
         "status_message": "Waiting for approval before execution." if requires_approval else "Request saved. Preparing scans.",
@@ -612,6 +672,15 @@ async def approve_unified_request(
             "new_value": req.get("new_value"),
         })
 
+    db_result = {"results": [], "errors": []}
+    if "db" in req.get("target_sources", []):
+        db_result = _process_database_sources(
+            req,
+            org_id,
+            ctx.user_id,
+            allow_destructive=True,
+        )
+
     local_tasks = list(request_tasks.find(
         {
             "request_id": request_id,
@@ -623,10 +692,12 @@ async def approve_unified_request(
         task.get("status") in {"pending", "in_progress"} for task in local_tasks
     )
     cloud_failed = isinstance(cloud_result, dict) and bool(cloud_result.get("error"))
-    next_status = "error" if cloud_failed else "in_progress" if has_pending_local else "completed"
+    db_failed = bool(db_result.get("errors"))
+    next_status = "error" if cloud_failed or db_failed else "in_progress" if has_pending_local else "completed"
     source_status = {
         source: (
             "error" if source == "cloud" and cloud_failed else
+            "error" if source == "db" and db_failed else
             "queued" if source == "local" and has_pending_local else
             "completed"
         )
@@ -640,6 +711,8 @@ async def approve_unified_request(
                 "status": next_status,
                 "source_status": source_status,
                 "status_message": RequestStateManager.build_status_message(source_status),
+                "db_results": db_result.get("results", []),
+                "db_errors": db_result.get("errors", []),
                 "approved_at": now,
                 "updated_at": now,
                 **({} if next_status == "in_progress" else {"closed_at": now}),

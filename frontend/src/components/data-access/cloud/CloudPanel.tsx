@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAppSelector } from "@/redux/hooks";
+import { getAuthHeaders } from "@/api/auth-headers";
 
 const API = ((import.meta.env.VITE_API_URL as string | undefined) || "http://127.0.0.1:8010").replace(/\/$/, "");
 
@@ -41,6 +43,13 @@ interface ConnectedSource {
 }
 
 export default function CloudPanel() {
+  const authToken = useAppSelector((state) => state.auth.token);
+  const currentOrgId = useAppSelector((state) => state.auth.currentOrgId);
+  const authHeaders = (contentType?: string) => {
+    if (!authToken || authToken.startsWith("guest_") || !currentOrgId) return contentType ? { "Content-Type": contentType } : {};
+    return getAuthHeaders(authToken, currentOrgId, contentType);
+  };
+
   const [loading, setLoading] = useState(false);
   const [cloudData, setCloudData] = useState<CloudObject[]>([]);
   const [sources, setSources] = useState<ConnectedSource[]>([]);
@@ -69,7 +78,7 @@ export default function CloudPanel() {
 
   const fetchSources = async () => {
     try {
-      const res = await fetch(`${API}/cloud/sources`);
+      const res = await fetch(`${API}/cloud/sources`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.sources) setSources(data.sources);
@@ -84,6 +93,7 @@ export default function CloudPanel() {
     try {
       const res = await fetch(`${API}/cloud/sources/${sourceToDelete.id}`, {
         method: "DELETE",
+        headers: authHeaders(),
       });
 
       if (!res.ok) {
@@ -106,7 +116,7 @@ export default function CloudPanel() {
 
   const fetchExistingResults = async () => {
     try {
-      const res = await fetch(`${API}/cloud/results`);
+      const res = await fetch(`${API}/cloud/results`, { headers: authHeaders() });
       if (res.ok) {
         const data = await res.json();
         if (data.results && data.results.length > 0) {
@@ -138,6 +148,7 @@ export default function CloudPanel() {
 
       const res = await fetch(`${API}/cloud/scan-cloud`, {
         method: "POST",
+        headers: authHeaders(),
       });
 
       const contentType = res.headers.get("content-type") || "";
@@ -199,7 +210,7 @@ export default function CloudPanel() {
 
       const res = await fetch(`${API}/cloud/connect`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders("application/json"),
         body: JSON.stringify(payload),
       });
 

@@ -110,6 +110,17 @@ interface RequestDetailData {
     status?: string;
   }>;
   status_message?: string;
+  db_results?: Array<{
+    source_id?: string;
+    display_name?: string;
+    status?: string;
+    summary?: Record<string, number>;
+    findings?: Array<Record<string, unknown>>;
+    impacted_locations?: number;
+    impacted_rows?: number;
+    error?: string;
+  }>;
+  db_errors?: Array<{ source_id?: string; display_name?: string; error?: string }>;
 }
 
 function RequestCard({
@@ -308,6 +319,28 @@ function RequestCard({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {detail && detail.db_results && detail.db_results.length > 0 && (
+            <div className="space-y-1 pt-1">
+              <div className="text-[11px] font-semibold text-foreground">Database Results</div>
+              <div className="bg-muted/20 border border-border rounded-sm p-2 font-mono text-[10px] space-y-1 text-muted-foreground">
+                {detail.db_results.map((result, index) => (
+                  <div key={`${result.source_id || "db"}-${index}`}>
+                    [{(result.status || "completed").toUpperCase()}] {result.display_name || result.source_id || "Database source"}
+                    {result.impacted_rows !== undefined && ` - ${result.impacted_rows} rows affected`}
+                    {result.summary && ` - ${result.summary.finding_count || 0} findings`}
+                    {result.error && <span className="text-destructive"> - {result.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {detail && detail.db_errors && detail.db_errors.length > 0 && (
+            <div className="text-[11px] text-destructive">
+              Database: {detail.db_errors.map((error) => error.error).filter(Boolean).join("; ")}
             </div>
           )}
 
