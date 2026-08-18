@@ -36,7 +36,9 @@ for platform in "${PLATFORMS[@]}"; do
   goos="${platform%%/*}"
   goarch="${platform##*/}"
  
-  output="$DIST_DIR/dpdp-agent-${goos}-${goarch}"
+  outdir="$DIST_DIR/${goos}-${goarch}"
+  mkdir -p "$outdir"
+  output="$outdir/dpdp-agent"
   if [ "$goos" = "windows" ]; then
     output="${output}.exe"
   fi

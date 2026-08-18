@@ -19,7 +19,8 @@ import type { DSRRequest } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getAuthHeaders } from "@/api/auth-headers";
-import { useAppSelector } from "@/redux/hooks";
+import { useAppSelector, useAppDispatch } from "@/redux/hooks";
+import { setCurrentOrg } from "@/redux/authSlice";
 
 const subtabs = [
   { label: "All Requests", href: "/requests" },
@@ -453,6 +454,8 @@ export default function RequestsPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const authToken = useAppSelector((state) => state.auth.token);
   const currentOrgId = useAppSelector((state) => state.auth.currentOrgId);
+  const organisations = useAppSelector((state) => state.auth.organisations);
+  const dispatch = useAppDispatch();
   const authHeaders = useMemo(() => {
     if (!authToken || authToken.startsWith("guest_") || !currentOrgId) return {};
     return getAuthHeaders(authToken, currentOrgId);
@@ -693,6 +696,19 @@ export default function RequestsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {organisations && organisations.length > 0 && (
+            <select
+              value={currentOrgId || ""}
+              onChange={(e) => dispatch(setCurrentOrg(e.target.value))}
+              className="h-9 rounded-md border border-border bg-background px-3 py-1 text-[13px] text-foreground focus:outline-none focus:ring-1 focus:ring-primary font-medium"
+            >
+              {organisations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          )}
           <Button size="sm" onClick={() => setIsCreateOpen(true)}>
             <Plus className="h-3.5 w-3.5 mr-1" /> Create new DSR
           </Button>

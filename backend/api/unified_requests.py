@@ -572,6 +572,7 @@ async def list_unified_requests(
             "source_status": r.get("source_status", {}),
             "status_message": r.get("status_message") or RequestStateManager.build_status_message({"request": status}),
             "cloud_error": r.get("cloud_error"),
+            "org_id": r.get("org_id") or r.get("organisation_id"),
         })
 
     known_request_ids = set(request_ids)
@@ -611,6 +612,7 @@ async def list_unified_requests(
             "tasks_completed": 1 if t.get("status") == "completed" else 0,
             "target_sources": ["local"],
             "source_types": ["local_device"],
+            "org_id": t.get("org_id") or t.get("organisation_id"),
         })
 
     return {"requests": formatted}

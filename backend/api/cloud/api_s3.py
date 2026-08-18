@@ -142,6 +142,7 @@ def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
             "tasks_count": len(tasks),
             "source_types": source_types,
             "target_sources": resolved_targets,
+            "org_id": r.get("org_id") or r.get("organisation_id"),
         })
 
     return {"requests": formatted}
