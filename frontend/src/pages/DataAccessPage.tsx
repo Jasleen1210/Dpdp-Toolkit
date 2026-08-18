@@ -2,7 +2,7 @@ import React from "react";
 import { useSearchParams } from "react-router-dom";
 import { HardDrive, Database, Cloud } from "lucide-react";
 import LocalFilesPanel from "../components/data-access/local/LocalFilesPanel";
-import DatabasePanel from "../components/data-access/database/DatabasePanel";
+import DatabaseScannerPanel from "../components/data-access/database/DatabaseScannerPanel";
 import CloudPanel from "../components/data-access/cloud/CloudPanel";
 
 type AccessMode = "local" | "db" | "cloud";
@@ -90,7 +90,7 @@ export default function DataAccessPage() {
       <ModeSelector mode={mode} setMode={setMode} />
 
       {mode === "local" && <LocalFilesPanel />}
-      {mode === "db" && <DatabasePanel />}
+      {mode === "db" && <DatabaseScannerPanel />}
       {mode === "cloud" && (
         <>
           <CloudPanel />
