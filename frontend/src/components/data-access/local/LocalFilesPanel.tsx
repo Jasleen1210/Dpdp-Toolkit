@@ -2,14 +2,13 @@ import React, { useEffect, useMemo, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import {
   approveDevice,
-  createRemediationTask,
+  createUnifiedLocalRequest,
   getMyOrganisations,
   getTaskGroupResults,
   listDeviceApprovalRequests,
   listDeviceDailyScanReports,
   listOrganisationDevices,
   listTasks,
-  type CreateTaskRequest,
   type Device,
   type DeviceApprovalRequestItem,
   type DeviceDailyScanReportItem,
@@ -201,30 +200,25 @@ export default function LocalFilesPanel() {
     const ids = approvedDevices.map((d) => d.device_id);
     if (!ids.length) { setErrorText("No approved devices available."); return; }
     const targets = taskTargetDeviceIds.length ? taskTargetDeviceIds : ids;
+    if (!authToken?.trim()) { setErrorText("You must be logged in to create a request."); return; }
     setLoading(true);
 
-    let ok = 0;
-    const errs: string[] = [];
-    for (const deviceId of targets) {
-      const payload: CreateTaskRequest = {
-        action_type: actionType,
-        target_value: query,
-        device_id: deviceId,
-        ...(actionType === "update" && { new_value: newValue }),
-      };
-      const res = await createRemediationTask(apiConfig, payload);
-      if (res.ok && res.data) {
-        ok++;
-        if (res.data.task_group_id) setLatestTaskGroupId(res.data.task_group_id);
-      } else {
-        errs.push(`${deviceId}: ${res.error || "Unknown error"}`);
-      }
-    }
+    // One master request fanned out across all selected devices, so they show up together.
+    const res = await createUnifiedLocalRequest(apiConfig, authToken, {
+      type: actionType,
+      identifier: query,
+      new_value: actionType === "update" ? newValue : undefined,
+      device_ids: targets,
+    });
 
     await refreshTaskHistory();
     setLoading(false);
-    if (errs.length) setErrorText(`Failed on some devices:\n${errs.join("\n")}`);
-    if (ok > 0) setStatusText(`Created ${ok} request(s) across ${targets.length} device(s).`);
+    if (!res.ok) {
+      setErrorText(`Failed to create request: ${res.error || "Unknown error"}`);
+      return;
+    }
+    if (res.data?.request_id) setLatestTaskGroupId(res.data.request_id);
+    setStatusText(`Created 1 request across ${targets.length} device(s).`);
   };
 
   const handleFetchTaskResults = async () => {

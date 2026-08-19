@@ -412,6 +412,53 @@ export async function createRemediationTask(
   );
 }
 
+export type CreateUnifiedRequestPayload = {
+  type: "access" | "update" | "delete";
+  identifier: string;
+  new_value?: string;
+  device_ids: string[];
+};
+
+export type CreateUnifiedRequestResponse = {
+  request_id: string;
+  status: string;
+};
+
+// Creates ONE master request fanned out across all selected devices (instead of
+// one master request per device), so they show up together on the Requests page.
+export async function createUnifiedLocalRequest(
+  config: LocalAgentApiConfig,
+  authToken: string,
+  payload: CreateUnifiedRequestPayload,
+): Promise<ApiResult<CreateUnifiedRequestResponse>> {
+  if (!config.orgId?.trim()) {
+    return { ok: false, status: 400, data: null, error: "Organisation ID is required" };
+  }
+  if (!authToken?.trim()) {
+    return { ok: false, status: 400, data: null, error: "User authentication token is required" };
+  }
+
+  return requestJSON<CreateUnifiedRequestResponse>(
+    `${normalizeBaseUrl(config.baseUrl)}/requests`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`,
+        "X-Org-Id": config.orgId,
+      },
+      body: JSON.stringify({
+        type: payload.type,
+        identifier: payload.identifier,
+        new_value: payload.new_value,
+        target: "local",
+        device_ids: payload.device_ids,
+        org_id: config.orgId,
+      }),
+    },
+  );
+}
+
 export async function getDeviceTasks(
   config: LocalAgentApiConfig,
   deviceId: string,

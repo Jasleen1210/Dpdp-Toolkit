@@ -140,6 +140,7 @@ function RequestCard({
   authHeaders: Record<string, string>;
 }) {
   const isAwaitingApproval = Boolean(request.requires_approval) && request.status === "awaiting_approval";
+  const wasApproved = Boolean(request.requires_approval) && !isAwaitingApproval && request.status !== "rejected";
   const targetTag = getTargetBadge(request);
   const [detail, setDetail] = useState<RequestDetailData | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -323,21 +324,36 @@ function RequestCard({
             </div>
           )}
 
-          {detail && detail.db_results && detail.db_results.length > 0 && (
-            <div className="space-y-1 pt-1">
-              <div className="text-[11px] font-semibold text-foreground">Database Results</div>
-              <div className="bg-muted/20 border border-border rounded-sm p-2 font-mono text-[10px] space-y-1 text-muted-foreground">
-                {detail.db_results.map((result, index) => (
-                  <div key={`${result.source_id || "db"}-${index}`}>
-                    [{(result.status || "completed").toUpperCase()}] {result.display_name || result.source_id || "Database source"}
-                    {result.impacted_rows !== undefined && ` - ${result.impacted_rows} rows affected`}
-                    {result.summary && ` - ${result.summary.finding_count || 0} findings`}
-                    {result.error && <span className="text-destructive"> - {result.error}</span>}
+          {detail && detail.db_results && detail.db_results.length > 0 && (() => {
+            const results = detail.db_results!;
+            const totalRows = results.reduce((sum, r) => sum + (r.impacted_rows || 0), 0);
+            const totalLocations = results.reduce(
+              (sum, r) => sum + (r.impacted_locations ?? (r.findings ? r.findings.length : 0)),
+              0
+            );
+            const allCompleted = results.every((r) => (r.status || "completed") === "completed");
+            return (
+              <div className="space-y-2 pt-1">
+                <div className="text-[11px] font-semibold text-foreground">Database Results</div>
+                {allCompleted && (
+                  <div className="rounded-sm border border-success/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-600">
+                    Database request completed successfully — {totalRows} row{totalRows === 1 ? "" : "s"} changed across {totalLocations} table{totalLocations === 1 ? "" : "s"}/location{totalLocations === 1 ? "" : "s"}.
                   </div>
-                ))}
+                )}
+                <div className="bg-muted/20 border border-border rounded-sm p-2 font-mono text-[10px] space-y-1 text-muted-foreground">
+                  {results.map((result, index) => (
+                    <div key={`${result.source_id || "db"}-${index}`}>
+                      [{(result.status || "completed").toUpperCase()}] {result.display_name || result.source_id || "Database source"}
+                      {result.impacted_rows !== undefined && ` - ${result.impacted_rows} row(s) changed`}
+                      {result.impacted_locations !== undefined && ` in ${result.impacted_locations} table(s)`}
+                      {result.summary && ` - ${result.summary.finding_count || 0} findings`}
+                      {result.error && <span className="text-destructive"> - {result.error}</span>}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {detail && detail.db_errors && detail.db_errors.length > 0 && (
             <div className="text-[11px] text-destructive">
@@ -364,14 +380,19 @@ function RequestCard({
               >
                 {approving ? (
                   <>
-                    <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Approving & Executing...
+                    <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Approving
                   </>
                 ) : (
                   <>
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" /> Approve & Execute Request
+                    <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" /> Approve Request
                   </>
                 )}
               </Button>
+            )}
+            {wasApproved && (
+              <span className="inline-flex items-center gap-1.5 rounded-sm border border-success/30 bg-emerald-500/10 px-2.5 py-1.5 text-[12px] text-emerald-600">
+                <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+              </span>
             )}
           </div>
         </div>

@@ -16,12 +16,12 @@ SPARK is a full-stack application built to help organizations:
 
 ### Key Components
 
-| Component | Technology | Purpose |
-|-----------|-----------|---------|
-| **Frontend** | React 18 + TypeScript + Vite | Web dashboard for data access, audit, and incident management |
-| **Backend** | Python FastAPI | RESTful API for authentication, device management, and data operations |
-| **Agent** | Go 1.24 | Local device agent for scanning and remediation |
-| **Database** | MongoDB | Session, organization, and audit data storage |
+| Component    | Technology                   | Purpose                                                                |
+| ------------ | ---------------------------- | ---------------------------------------------------------------------- |
+| **Frontend** | React 18 + TypeScript + Vite | Web dashboard for data access, audit, and incident management          |
+| **Backend**  | Python FastAPI               | RESTful API for authentication, device management, and data operations |
+| **Agent**    | Go 1.24                      | Local device agent for scanning and remediation                        |
+| **Database** | MongoDB                      | Session, organization, and audit data storage                          |
 
 ---
 
@@ -33,29 +33,36 @@ SPARK is a full-stack application built to help organizations:
 dpdp/
 ├── frontend/           # React SPA dashboard
 │   ├── src/
-│   │   ├── pages/     # Page components (Dashboard, DataAccess, etc.)
+│   │   ├── pages/     # Page components (Dashboard, DataAccess, Requests, etc.)
 │   │   ├── components/# Reusable UI components
-│   │   ├── api/       # API client functions
-│   │   ├── redux/     # State management
+│   │   ├── api/       # API client functions & auth headers
+│   │   ├── redux/     # State management (auth, orgs, context)
 │   │   └── lib/       # Utilities and constants
 │   ├── package.json
 │   └── vite.config.ts
 │
 ├── backend/            # FastAPI server
 │   ├── api/
-│   │   ├── local/     # Local device APIs (tasks, devices, results)
+│   │   ├── agents/    # Device enrollment, heartbeat, tasks, installer
 │   │   ├── cloud/     # Cloud storage integration (S3, Azure, GCP)
-│   │   └── combined/  # Auth and organization endpoints
-│   ├── services/      # Business logic
+│   │   ├── db_api/    # Database sources and scanning routes
+│   │   ├── identity/  # Signup, login, sessions, org management
+│   │   ├── middleware.py # OrgAuthContext dependency & authorization
+│   │   └── unified_requests.py # Master DSR request lifecycle endpoints
+│   ├── services/      # Business logic (PII detection, RequestStateManager, masking)
+│   │   ├── persistence/ # MongoDB connection & index management
+│   │   ├── cloud_storage/ # AWS/Azure/GCP cloud service adapters
+│   │   └── db/        # Database connectors & scanner engine
 │   ├── main.py
 │   └── requirements.txt
 │
-├── agent-go/           # Go agent (runs on devices)
-│   ├── cmd/agent/     # Main agent binary
-│   ├── internal/      # Agent configuration and logic
+├── agent-go/           # Go agent (runs on local devices)
+│   ├── cmd/agent/     # Agent binary entrypoint and polling
+│   ├── internal/      # Scanner engine, client, PII detector, GUI
+│   ├── install.ps1    # PowerShell agent installer
 │   └── go.mod
 │
-└── mock_**/            # Mock data for testing (S3, Azure, GCP, etc.)
+└── mock_**/            # Mock data for testing (S3, Azure, GCP, HR, DBs)
 ```
 
 ---
@@ -73,87 +80,87 @@ dpdp/
 ### Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone <repo-url>
    cd dpdp
    ```
 
 2. **Setup Backend**
+
    ```bash
    cd backend
-   
+
    # Create virtual environment
    python -m venv venv
    source venv/bin/activate  # On Windows: venv\Scripts\activate
-   
+
    # Install dependencies
    pip install -r requirements.txt
-   
+
    # Setup environment variables
    cp .env.example .env
    # Edit .env with your MongoDB connection and CORS settings
-   
+
    # Run server
    uvicorn main:app --reload --host 0.0.0.0 --port 8000
    ```
 
 3. **Setup Frontend**
+
    ```bash
    cd frontend
-   
+
    # Install dependencies
    bun install  # or npm install
-   
+
    # Setup environment variables
    cp .env.example .env
    # Set VITE_API_URL=http://localhost:8000
-   
+
    # Start dev server
    bun run dev  # or npm run dev
    # Opens at http://localhost:5173
    ```
 
 4. **Setup Go Agent** (Optional)
+
    ```bash
    cd agent-go
-   
+
    # Build the agent
    go build -o dpdp-agent ./cmd/agent
-   
+
    # Run the agent
    ./dpdp-agent
    ```
 
 ---
 
-## 🔐 Authentication Flow
+## 🔐 Authentication & Organization Context
 
 ### User Registration & Login
 
 1. **Signup** → User creates account with email/password
-2. **Login** → User authenticates, receives session token
-3. **Token Storage** → Token stored in localStorage and Redux state
-4. **Authorization** → All API requests include `Authorization: Bearer <token>` header
+2. **Login** → User authenticates, receives session token and organization memberships
+3. **Token Storage** → Token stored in localStorage and Redux state (`auth.token`, `auth.currentOrgId`)
+4. **Org Isolation** → All protected API requests include `Authorization: Bearer <token>` and `X-Org-Id: <org_id>` headers (handled via `OrgAuthContext` middleware)
 
 ### Organization Management
 
-- Users can create and join organizations
-- Each organization has:
-  - Admin API keys (for device management)
-  - Agent tokens (for device communication)
-  - Device enrollment codes
-  - User memberships with roles
+- Users can belong to multiple organizations with specific roles (`admin`, `member`, `owner`)
+- `resolve_org_context` dependency verifies user membership in requested organization
+- Each organization provides:
+  - Admin API keys (`X-Admin-Key` for administrative actions)
+  - Agent tokens (for Go local agent endpoints)
+  - Isolated data sources, scanning tasks, findings, and audit logs
 
 ### Logout
 
-[See [LOGOUT_FLOW_EXPLAINED.md](LOGOUT_FLOW_EXPLAINED.md) for detailed explanation]
-
-**Simple flow:**
 1. User clicks "Log out" → Dropdown closes immediately
-2. Frontend makes POST `/auth/logout` request with token
+2. Frontend sends `POST /auth/logout` request with session token
 3. Backend marks session token as revoked
-4. Frontend clears all auth state (Redux + localStorage)
-5. User redirected to login page
+4. Frontend clears state (Redux + localStorage) and redirects to `/login`
 
 ---
 
@@ -168,6 +175,7 @@ dpdp/
 - **Cloud Storage**: Scan AWS S3, Azure Blob, GCP Cloud Storage
 
 **Workflow:**
+
 1. Register devices through agent installation
 2. Approve device enrollment requests
 3. Create scanning requests (formerly "tasks")
@@ -203,6 +211,7 @@ Scanning requests:
 ### 5. Dashboard
 
 Unified view of:
+
 - Organization statistics (devices, users, requests)
 - Recent activities and incidents
 - Data protection posture
@@ -212,56 +221,70 @@ Unified view of:
 
 ## 🔧 API Endpoints
 
-### Authentication
+### Identity & Auth
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/auth/signup` | Register new user |
-| POST | `/auth/login` | Login and get session token |
-| POST | `/auth/logout` | Logout and revoke token |
-| GET | `/auth/organisations` | Get user's organizations |
+| Method | Endpoint              | Purpose                                |
+| ------ | --------------------- | -------------------------------------- |
+| POST   | `/auth/signup`        | Register new user                      |
+| POST   | `/auth/login`         | Login and receive token & org access   |
+| POST   | `/auth/logout`        | Logout and revoke session token        |
+| GET    | `/auth/organisations` | Get user's member organizations        |
 
-### Devices
+### Unified Data Subject Requests (DSR)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| GET | `/devices` | List organization devices |
-| POST | `/devices/approval-requests` | Get pending device approvals |
-| POST | `/devices/approve` | Approve device enrollment |
+| Method | Endpoint                 | Purpose                                                               |
+| ------ | ------------------------ | --------------------------------------------------------------------- |
+| POST   | `/requests`              | Create master DSR (Access / Update / Delete) across cloud, local, db  |
+| GET    | `/requests`              | List org DSR requests with canonical status & filters                 |
+| GET    | `/requests/{id}`         | Get master request detail with task fan-out and source scan results   |
+| POST   | `/requests/{id}/approve` | Admin approval for pending requests to trigger remediation            |
 
-### Requests (Tasks)
+### Devices & Agent Management
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/tasks` | Create scanning request |
-| GET | `/tasks` | List requests |
-| GET | `/tasks/{id}/results` | Get request results |
-| POST | `/results` | Submit scan results |
+| Method | Endpoint                     | Purpose                                          |
+| ------ | ---------------------------- | ------------------------------------------------ |
+| POST   | `/devices/register`          | Register new agent / device                      |
+| GET    | `/devices`                   | List org registered devices and activity status  |
+| POST   | `/devices/heartbeat`         | Update device liveness timestamp                 |
+| GET    | `/devices/approval-requests` | List pending device approval requests            |
+| POST   | `/devices/approve`           | Approve/reject pending device enrollment         |
+| GET    | `/devices/tasks`             | Device task polling (called by Go agent)         |
+| POST   | `/devices/cron-runs`         | Register/update agent cron scan execution logs   |
 
 ### Cloud Integration
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/cloud/scan-cloud` | Scan cloud storage |
-| POST | `/cloud/remediate` | Remediate cloud data |
+| Method | Endpoint              | Purpose                                         |
+| ------ | --------------------- | ----------------------------------------------- |
+| POST   | `/cloud/connect`      | Connect cloud storage provider (AWS/Azure/GCP)  |
+| GET    | `/cloud/data-sources` | List connected cloud storage sources            |
+| POST   | `/cloud/scan-cloud`   | Initiate cloud storage PII classification scan  |
+| POST   | `/cloud/search`       | Search cloud objects for data subject matches   |
+
+### Database Sources & Scans
+
+| Method | Endpoint             | Purpose                                           |
+| ------ | -------------------- | ------------------------------------------------- |
+| POST   | `/db/connect`        | Register database connection (Postgres, SQLite)   |
+| GET    | `/db/sources`        | List registered database sources                  |
+| POST   | `/db/scan-database`  | Initiate database PII scan across tables/columns  |
 
 ---
 
 ## 🗂️ Frontend Pages
 
-| Route | Purpose |
-|-------|---------|
-| `/login` | User authentication |
-| `/` | Main dashboard |
-| `/access-data` | Data source management and scanning |
-| `/audit` | Audit logs and activity tracking |
-| `/incidents` | Incident management |
-| `/data-protection` | Protection policies and settings |
-| `/data-inventory` | Data source catalog |
-| `/infrastructure` | Infrastructure and integrations |
-| `/requests` | Manage scanning/remediation requests |
-| `/consent` | Consent management |
-| `/profile` | User profile settings |
+| Route              | Purpose                              |
+| ------------------ | ------------------------------------ |
+| `/login`           | User authentication                  |
+| `/`                | Main dashboard                       |
+| `/access-data`     | Data source management and scanning  |
+| `/audit`           | Audit logs and activity tracking     |
+| `/incidents`       | Incident management                  |
+| `/data-protection` | Protection policies and settings     |
+| `/data-inventory`  | Data source catalog                  |
+| `/infrastructure`  | Infrastructure and integrations      |
+| `/requests`        | Manage scanning/remediation requests |
+| `/consent`         | Consent management                   |
+| `/profile`         | User profile settings                |
 
 ---
 
@@ -323,21 +346,26 @@ GOOS=darwin GOARCH=amd64 go build -o dpdp-agent-darwin ./cmd/agent
 
 Runtime storage uses one Mongo database, selected with `DPDP_DB_NAME` (default
 `dpdp_platform`). `ATLAS_URL` selects the Mongo server. Local, cloud, and
-future database scans are separated by `data_sources.source_type`, not by
-separate databases or duplicate collections.
+database scans are separated by `data_sources.source_type` (or their own
+tables, for database sources), not by separate databases or duplicate
+collections.
 
-| Collection | Purpose |
-| --- | --- |
-| `organizations`, `users`, `org_memberships`, `sessions` | Tenant and authentication records. |
-| `data_sources` | Every scanning target. `source_type` is `local_device`, `cloud_storage`, or future `database`; `org_id` scopes every record. |
-| `data_source_approval_requests` | Approval workflow for enrollable sources, currently local devices. |
-| `scan_jobs` | Cloud scans, device cron runs, and future database scan executions. |
-| `pii_classifications` | Findings from every source. Documents carry `org_id`, `data_source_id`, `source_type`, and `location`. |
-| `data_subject_requests` | The master DPDP request: `request_type`, `data_principal`, verification/status lifecycle, SLA, submission channel, and timestamps. |
-| `request_tasks` | One fan-out task per request/data source, with execution status, `scan_job_id`, embedded `result_summary`, action, and completion time. |
-| `data_source_vulnerabilities` | Current vulnerability evidence per data source. |
-| `audit_logs` | Immutable operational/audit events; new writers should include `org_id`, actor, entity, diff, IP, and `created_at`. |
-| `redaction_records` | Idempotency/evidence records for local deletion and masking actions. |
+| Collection                                              | Purpose                                                                                                                                                                |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `organizations`, `users`, `org_memberships`, `sessions` | Tenant and authentication records.                                                                                                                                     |
+| `data_sources`                                          | Every local/cloud scanning target. `source_type` is `local_device` or `cloud_storage`; `org_id` scopes every record.                                                   |
+| `data_source_approval_requests`                         | Approval workflow for enrollable sources, currently local devices.                                                                                                     |
+| `database_sources`                                      | Registered database-engine connections (Postgres, SQLite, ...); kept separate because connection configs differ in shape from `data_sources`.                          |
+| `agent_scan_logs`                                       | Local device/agent cron and scan execution history.                                                                                                                    |
+| `cloud_scan_logs`                                       | Cloud storage scan execution history.                                                                                                                                  |
+| `database_scan_runs`                                    | Database-engine scan execution history.                                                                                                                                |
+| `pii_classifications`                                   | Findings from local/cloud sources. Documents carry `org_id`, `data_source_id`, `source_type`, and `location`.                                                          |
+| `database_findings`                                     | Column-level PII findings from database scans.                                                                                                                         |
+| `data_subject_requests`                                 | The master DPDP request: `request_type`, `data_principal`, verification/status lifecycle, SLA, submission channel, and timestamps.                                     |
+| `request_tasks`                                         | One fan-out task per request/data source, with execution status, `scan_job_id`, embedded `result_summary`, action, and completion time.                                |
+| `data_source_vulnerabilities`                           | Current vulnerability evidence per data source.                                                                                                                        |
+| `audit_logs`                                            | Immutable operational/audit trail shared by local, cloud, and database actions; every writer includes `org_id`, actor, entity, `source_type`, action, and `timestamp`. |
+| `redaction_records`                                     | Idempotency/evidence records for local deletion and masking actions.                                                                                                   |
 
 The API keeps compatibility fields such as `organisation_id`, `device_id`, and
 task `id` while clients transition. They are aliases within the same canonical
@@ -357,42 +385,50 @@ python -m backend.scripts.migrate_to_canonical_storage --apply
 ```
 
 It copies `cloud_classification` and `device_results` into
-`pii_classifications`; `cloud_logs` and `device_cron_logs` into `scan_jobs`;
-cloud `user_requests` and local `device_tasks` into `data_subject_requests`
-plus `request_tasks`; and devices into `data_sources`. Re-running it updates
-the same canonical documents. Validate the counts and application traffic on
-the new database before archiving legacy databases manually.
+`pii_classifications`; `cloud_logs` into `cloud_scan_logs` and
+`device_cron_logs` into `agent_scan_logs`; cloud `user_requests` and local
+`device_tasks` into `data_subject_requests` plus `request_tasks`; and devices
+into `data_sources`. Re-running it updates the same canonical documents.
+Validate the counts and application traffic on the new database before
+archiving legacy databases manually.
 
 **users**
+
 - User accounts with email, password hash, name
 - Created and updated timestamps
 
 **sessions**
+
 - Session tokens with user_id
 - Revoked flag (for logout)
 - Creation and expiration timestamps
 
 **organizations**
+
 - Organization details and configuration
 - Admin API keys, agent tokens
 - Device enrollment codes
 
 **org_memberships**
+
 - User-to-organization relationships
 - User roles (admin, member)
 
 **devices**
+
 - Device registration info (device_id, hostname)
 - Approval status
 - Last seen timestamp, agent version
 
 **device_tasks**
+
 - Scanning/remediation requests
 - Query parameters, target devices
 - Status (pending, completed, expired)
 - Expiration timestamp
 
 **device_results**
+
 - Scan results for each task
 - Matches found, file count
 - Remediation data
@@ -417,6 +453,7 @@ the new database before archiving legacy databases manually.
 ### CORS
 
 Configurable via `CORS_ORIGINS` environment variable:
+
 ```
 CORS_ORIGINS=http://localhost:5173,http://localhost:8000
 ```
@@ -508,20 +545,20 @@ docker build -f frontend/Dockerfile -t dpdp-frontend ./frontend
 ### Run with Docker Compose
 
 ```yaml
-version: '3.8'
+version: "3.8"
 services:
   mongodb:
     image: mongo:latest
     ports:
       - "27017:27017"
-  
+
   backend:
     image: dpdp-backend
     ports:
       - "8000:8000"
     environment:
       MONGODB_URI: mongodb://mongodb:27017/dpdp
-  
+
   frontend:
     image: dpdp-frontend
     ports:
@@ -557,6 +594,7 @@ services:
 ## 🆘 Support
 
 For issues, questions, or suggestions:
+
 1. Check [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 2. Review existing issues
 3. Create a new issue with detailed reproduction steps
