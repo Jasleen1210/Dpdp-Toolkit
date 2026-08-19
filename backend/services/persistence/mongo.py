@@ -47,7 +47,7 @@ def _make_client():
             )
             # Test connection
             client.server_info()
-            print("[MongoDB] ✅ Connected to Atlas successfully")
+            print("[MongoDB] Connected to Atlas successfully")
             return client
         except Exception as exc:
             error_msg = str(exc)
@@ -65,20 +65,27 @@ def _make_client():
 client = _make_client()
 db = client[os.getenv("DPDP_DB_NAME", "dpdp_platform").strip() or "dpdp_platform"]
 
-# Canonical collections
+# Canonical collections. Everything lives in one Mongo database (`db` above);
+# scan-run logs are split per source category (agent/cloud/database) because
+# their payload shapes differ, while requests, sources, and audit trail stay unified.
 organizations = db["organizations"]
 users = db["users"]
 org_memberships = db["org_memberships"]
 sessions = db["sessions"]
 data_sources = db["data_sources"]
 data_source_approval_requests = db["data_source_approval_requests"]
-scan_jobs = db["scan_jobs"]
+agent_scan_logs = db["agent_scan_logs"]
+cloud_scan_logs = db["cloud_scan_logs"]
 pii_classifications = db["pii_classifications"]
 data_subject_requests = db["data_subject_requests"]
 request_tasks = db["request_tasks"]
 data_source_vulnerabilities = db["data_source_vulnerabilities"]
 audit_logs = db["audit_logs"]
 redaction_records = db["redaction_records"]
+
+# Database-engine discovery collections (backend/services/db/db.py) also live
+# in this same `db`, kept in their own tables because connection configs and
+# column-level findings have a different shape than the generic collections above.
 
 
 def ensure_indexes() -> None:
@@ -90,7 +97,8 @@ def ensure_indexes() -> None:
         (sessions, ("token",), {"unique": True}),
         (data_sources, ([("org_id", 1), ("source_type", 1), ("source_key", 1)],), {"unique": True}),
         (data_source_approval_requests, ([("org_id", 1), ("data_source_id", 1), ("status", 1)],), {}),
-        (scan_jobs, ([("org_id", 1), ("data_source_id", 1), ("started_at", -1)],), {}),
+        (agent_scan_logs, ([("org_id", 1), ("data_source_id", 1), ("started_at", -1)],), {}),
+        (cloud_scan_logs, ([("org_id", 1), ("started_at", -1)],), {}),
         (pii_classifications, ([("org_id", 1), ("data_source_id", 1), ("location", 1)],), {}),
         (pii_classifications, ([("org_id", 1), ("request_task_id", 1)],), {}),
         (pii_classifications, ([("org_id", 1), ("task_id", 1)],), {}),

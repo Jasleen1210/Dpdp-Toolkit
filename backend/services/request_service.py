@@ -92,6 +92,8 @@ class RequestStateManager:
             "request": req,
             "local_tasks": local_tasks,
             "cloud_results": cloud_results,
+            "db_results": req.get("db_results", []),
+            "db_errors": req.get("db_errors", []),
         }
     
     @staticmethod
@@ -99,7 +101,8 @@ class RequestStateManager:
         req_status: str,
         local_tasks: List[dict],
         cloud_results: List[dict],
-        requires_approval: bool = False
+        requires_approval: bool = False,
+        approved: bool = False,
     ) -> str:
         """
         Derives canonical status from master request and all task states.
@@ -117,8 +120,8 @@ class RequestStateManager:
         if normalized in {"error", "failed"}:
             return "error"
         
-        # DELETE requests show approval state explicitly
-        if requires_approval:
+        # DELETE requests show approval state explicitly until approved
+        if requires_approval and not approved:
             if normalized in {"awaiting_approval", "pending"}:
                 return "awaiting_approval"
             elif normalized == "rejected":
@@ -159,10 +162,13 @@ class RequestStateManager:
         if not source_status:
             return "No scan sources were selected."
         errors = [source for source, state in source_status.items() if state == "error"]
+        awaiting = [source for source, state in source_status.items() if state == "awaiting_approval"]
         queued = [source for source, state in source_status.items() if state in {"queued", "in_progress"}]
         skipped = [source for source, state in source_status.items() if state == "skipped"]
         if errors:
             return f"Scan error on {', '.join(errors)}. Review the source details."
+        if awaiting:
+            return f"Waiting for approval before processing {', '.join(awaiting)}."
         if queued:
             return f"Waiting for scan results from {', '.join(queued)}."
         if skipped:
@@ -201,10 +207,15 @@ class RequestStateManager:
         new_value: Optional[str],
         device_ids: Optional[List[str]],
         expires_at: datetime,
+        requires_approval: bool = False,
     ) -> List[dict]:
         """
         Creates request_tasks for all org's approved devices.
-        
+
+        Tasks for requests that require approval are created as "awaiting_approval"
+        so the agent (which only executes "pending" tasks) does not act until
+        `release_local_device_tasks` flips them to "pending" on approval.
+
         Returns list of created task IDs for tracking.
         """
         target_devices = RequestStateManager.filter_org_devices(org_id, device_ids)
@@ -221,6 +232,7 @@ class RequestStateManager:
         task_group_id = str(uuid4())
         created_tasks = []
         now = utc_now()
+        initial_status = "awaiting_approval" if requires_approval else "pending"
         
         for device in target_devices:
             device_id = device.get("device_id")
@@ -241,7 +253,7 @@ class RequestStateManager:
                 "source_type": "local_device",
                 "query": packed_query,
                 "type": action_type,
-                "status": "pending",
+                "status": initial_status,
                 "created_at": now,
                 "expires_at": expires_at,
                 "updated_at": now,
@@ -252,8 +264,21 @@ class RequestStateManager:
             created_tasks.append({
                 "task_id": task_id,
                 "device_id": device_id,
-                "status": "pending",
+                "status": initial_status,
                 "expires_at": expires_at.isoformat(),
             })
         
         return created_tasks
+
+    @staticmethod
+    def release_local_device_tasks(request_id: str, org_id: str) -> int:
+        """Flips awaiting-approval local tasks to pending so the agent can execute them."""
+        result = request_tasks.update_many(
+            {
+                "request_id": request_id,
+                "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+                "status": "awaiting_approval",
+            },
+            {"$set": {"status": "pending", "updated_at": utc_now()}},
+        )
+        return result.modified_count

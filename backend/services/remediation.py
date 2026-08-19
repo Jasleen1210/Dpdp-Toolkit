@@ -11,16 +11,17 @@ from backend.services.cloud_storage.cloud_service import (
 from backend.services.persistence.mongo import audit_logs, pii_classifications
 from backend.services.pii_detection import detect_pii_full
 from backend.services.pii import build_pii_summary, summarize_pii_instances
+from backend.services.masking import mask_value
 
 
-def find_matching_records(identifier):
+def find_matching_records(identifier, org_id=None):
     matches = []
     query = identifier.strip().lower()
     if not query:
         return []
 
-    # Get all cloud objects across AWS, Azure, GCP, and connected storage
-    cloud_objs = list_cloud_objects()
+    # Get all cloud objects across AWS, Azure, GCP, and connected storage (org-scoped)
+    cloud_objs = list_cloud_objects(org_id)
     seen_files = set()
 
     # Extract digits for flexible phone number matching
@@ -68,7 +69,7 @@ def find_matching_records(identifier):
     return matches
 
 
-def refresh_file_mapping(path):
+def refresh_file_mapping(path, org_id=None):
     try:
         content = read_file(path)
         metadata = get_object_metadata(path)
@@ -84,6 +85,7 @@ def refresh_file_mapping(path):
                 "$set": {
                     **metadata,
                     **build_pii_summary(pii_result),
+                    **({"org_id": org_id} if org_id else {}),
                 },
                 "$unset": {"detected_values": ""},
             },
@@ -93,13 +95,13 @@ def refresh_file_mapping(path):
         pass
 
 
-def refresh_all_cloud_mappings():
+def refresh_all_cloud_mappings(org_id=None):
     try:
-        cloud_objects = list_cloud_objects()
+        cloud_objects = list_cloud_objects(org_id)
         current_files = [obj["file"] for obj in cloud_objects]
         pii_classifications.delete_many({"source_type": "cloud_storage", "file": {"$nin": current_files}})
         for obj in cloud_objects:
-            refresh_file_mapping(obj["file"])
+            refresh_file_mapping(obj["file"], org_id)
     except Exception:
         pass
 
@@ -163,21 +165,22 @@ def replace_query_value(content, identifier, replacement):
     return new_content
 
 
-def delete_data(identifier):
-    matches = find_matching_records(identifier)
+def delete_data(identifier, org_id=None):
+    matches = find_matching_records(identifier, org_id)
+    masked_value = mask_value(identifier)
 
     for m in matches:
         path = m["file"]
         content = read_file(path)
 
-        content = replace_query_value(content, identifier, "[REDACTED]")
+        content = replace_query_value(content, identifier, masked_value)
 
         for pii in m.get("matched_values", []):
             if pii.get("value"):
-                content = content.replace(pii["value"], "[REDACTED]")
+                content = content.replace(pii["value"], mask_value(pii["value"]))
 
         write_file(path, content)
-        refresh_file_mapping(path)
+        refresh_file_mapping(path, org_id)
 
     audit_logs.insert_one({
         "actor_type": "system",
@@ -196,11 +199,12 @@ def delete_data(identifier):
         identifier,
         matches,
         status="APPROVED_AND_REMOVED",
+        new_value=masked_value,
     )
 
 
-def access_data(identifier):
-    matches = find_matching_records(identifier)
+def access_data(identifier, org_id=None):
+    matches = find_matching_records(identifier, org_id)
 
     audit_logs.insert_one({
         "actor_type": "system",
@@ -217,8 +221,8 @@ def access_data(identifier):
     return build_request_response("ACCESS", identifier, matches)
 
 
-def update_data(identifier, new_value):
-    matches = find_matching_records(identifier)
+def update_data(identifier, new_value, org_id=None):
+    matches = find_matching_records(identifier, org_id)
 
     for m in matches:
         path = m["file"]
@@ -231,7 +235,7 @@ def update_data(identifier, new_value):
                 content = content.replace(pii["value"], new_value)
 
         write_file(path, content)
-        refresh_file_mapping(path)
+        refresh_file_mapping(path, org_id)
 
     audit_logs.insert_one({
         "actor_type": "system",
@@ -255,17 +259,17 @@ def update_data(identifier, new_value):
     }
 
 
-def process_request(req):
+def process_request(req, org_id=None):
     identifier = req.get("identifier", "")
     raw_type = str(req.get("type") or req.get("request_type") or "ACCESS").upper()
 
     if raw_type in ("DELETE", "ERASURE"):
-        return delete_data(identifier)
+        return delete_data(identifier, org_id)
     elif raw_type in ("ACCESS",):
-        return access_data(identifier)
+        return access_data(identifier, org_id)
     elif raw_type in ("UPDATE", "CORRECTION"):
         new_val = req.get("new_value")
         if not new_val:
             return {"error": "new_value required for update"}
-        return update_data(identifier, new_val)
+        return update_data(identifier, new_val, org_id)
     return {"error": f"Unknown request type {raw_type}"}

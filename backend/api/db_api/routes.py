@@ -6,7 +6,7 @@ from backend.api.identity.auth_org import (
     _require_org_membership,
     _require_session,
 )
-from backend.api.db_api.models import DatabaseSourceCreate, DatabaseDataManageRequest
+from backend.api.db_api.models import DatabaseSourceCreate, DatabaseDataManageRequest, DatabaseMaskRequest
 from backend.services.db.service import (
     DatabaseServiceError,
     DatabaseSourceNotFoundError,
@@ -155,6 +155,31 @@ async def delete_update_source(
             identifier=req.identifier,
             action=req.action,
             new_value=req.new_value,
+        )
+    except DatabaseSourceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except DatabaseServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/sources/{source_id}/mask")
+async def mask_source(
+    source_id: str,
+    organisation_id: str,
+    req: DatabaseMaskRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    """Mask (not delete) rows matching `identifier`, using the same deterministic
+    masking token algorithm as the local agent's delete-mask logic."""
+    user = _require_database_member(authorization, organisation_id)
+    try:
+        return delete_update_database_source(
+            organisation_id=organisation_id,
+            source_id=source_id,
+            user_id=user["id"],
+            identifier=req.identifier,
+            action="MASK",
+            new_value=None,
         )
     except DatabaseSourceNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
