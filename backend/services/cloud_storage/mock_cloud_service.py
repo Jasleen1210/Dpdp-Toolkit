@@ -24,10 +24,10 @@ MOCK_CLOUD_SOURCES = [
 ]
 
 
-def list_mock_objects():
+def list_mock_objects(org_id: str | None = None):
     objects = []
 
-    # Built-in static mock sources
+    # Built-in static mock sources (shared demo data, not org-specific)
     for source in MOCK_CLOUD_SOURCES:
         root = source["root"]
         if not root.exists():
@@ -51,8 +51,11 @@ def list_mock_objects():
                 }
             )
 
-    # Dynamic connected cloud sources stored in backend/cloud_connected
+    # Dynamic connected cloud sources stored in backend/cloud_connected/<org_id>,
+    # scoped per organisation so one org's connections never leak into another's scans.
     connected_root = BASE_DIR / "cloud_connected"
+    if org_id:
+        connected_root = connected_root / org_id
     if connected_root.exists():
         for path in connected_root.rglob("*"):
             if not path.is_file():

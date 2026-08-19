@@ -14,20 +14,20 @@ from backend.services.cloud_storage.mock_cloud_service import (
 )
 
 
-def list_cloud_objects():
+def list_cloud_objects(org_id: str | None = None):
 
     aws_objects = list_s3_objects()
- 
-    mock_objects = list_mock_objects()
+
+    mock_objects = list_mock_objects(org_id=org_id)
 
     return aws_objects + mock_objects
 
 
-def list_files():
+def list_files(org_id: str | None = None):
 
     return [
         obj["file"]
-        for obj in list_cloud_objects()
+        for obj in list_cloud_objects(org_id=org_id)
     ]
 
 

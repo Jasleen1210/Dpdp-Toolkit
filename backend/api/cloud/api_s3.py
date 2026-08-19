@@ -10,18 +10,20 @@ from uuid import uuid4
 from backend.services.cloud_storage.cloud_service import list_cloud_objects, read_file
 from backend.services.persistence.mongo import (
     audit_logs,
+    cloud_scan_logs,
     data_sources,
-    data_subject_requests,
     pii_classifications,
-    request_tasks,
-    scan_jobs,
 )
 from backend.services.pii_detection import detect_pii_full
 from backend.services.pii import build_pii_summary
 
-from backend.services.remediation import process_request
 from backend.api.middleware import OrgAuthContext, resolve_org_context
-from backend.api.unified_requests import UnifiedDataSubjectRequest, create_unified_request
+from backend.api.unified_requests import (
+    UnifiedDataSubjectRequest,
+    create_unified_request,
+    list_unified_requests,
+    approve_unified_request,
+)
 
 router = APIRouter(prefix="/cloud")
 
@@ -69,83 +71,10 @@ def build_match_summary(matches):
     }
 
 @router.get("/requests")
-def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
-    org_id = ctx.org_id
-    data = list(data_subject_requests.find({"$or": [{"org_id": org_id}, {"organisation_id": org_id}]}, {"_id": 0}).sort("created_at", -1))
-
-    formatted = []
-
-    for r in data:
-        r_id = r.get("id")
-        if not r_id:
-            continue
-        tasks = list(request_tasks.find({"request_id": r_id}, {"_id": 0}))
-        device_ids = [t.get("device_id") for t in tasks if t.get("device_id")]
-
-        subject = (
-            r.get("identifier")
-            or (r.get("data_principal", {}) or {}).get("identifier_hash")
-            or (r.get("data_principal", {}) or {}).get("email")
-            or "Unknown"
-        )
-
-        raw_type = (r.get("type") or r.get("request_type") or "access").lower()
-        type_mapping = {"correction": "update", "erasure": "delete"}
-        display_type = type_mapping.get(raw_type, raw_type)
-
-        status = r.get("status", "pending").lower()
-        if tasks:
-            all_done = all(t.get("status") == "completed" for t in tasks)
-            if all_done and status not in ("awaiting_approval", "rejected"):
-                status = "completed"
-            elif any(t.get("status") == "in_progress" for t in tasks):
-                status = "in_progress"
-
-        created_val = r.get("created_at")
-        created_str = (
-            created_val.strftime("%Y-%m-%d")
-            if hasattr(created_val, "strftime")
-            else str(created_val)[:10] if created_val else "-"
-        )
-
-        raw_target_sources = r.get("target_sources")
-        source_types = r.get("source_types", [])
-        if raw_target_sources is not None:
-            resolved_targets = raw_target_sources
-        elif "local_device" in source_types and "cloud_storage" not in source_types:
-            resolved_targets = ["local"]
-        elif "cloud_storage" in source_types and "local_device" not in source_types:
-            resolved_targets = ["cloud"]
-        elif device_ids and not ("cloud_storage" in source_types):
-            resolved_targets = ["local"]
-        else:
-            resolved_targets = ["cloud", "local"]
-
-        handler_str = "auto-system"
-        if device_ids:
-            handler_str = f"local ({', '.join(device_ids)})"
-        elif "local" in resolved_targets and len(resolved_targets) == 1:
-            handler_str = "local"
-        elif "cloud" in resolved_targets and len(resolved_targets) == 1:
-            handler_str = "cloud"
-        elif r.get("source_types"):
-            handler_str = ", ".join(r.get("source_types", []))
-
-        formatted.append({
-            "id": r_id,
-            "type": display_type,
-            "subject": subject,
-            "status": status,
-            "handler": handler_str,
-            "created": created_str,
-            "devices": device_ids,
-            "tasks_count": len(tasks),
-            "source_types": source_types,
-            "target_sources": resolved_targets,
-            "org_id": r.get("org_id") or r.get("organisation_id"),
-        })
-
-    return {"requests": formatted}
+async def get_requests(ctx: OrgAuthContext = Depends(resolve_org_context)):
+    """Back-compat alias: delegates to the unified list so both routes always
+    return identical, up-to-date status/approval fields instead of drifting."""
+    return await list_unified_requests(ctx)
 
 # create a request 
 @router.post("/requests")
@@ -168,39 +97,15 @@ async def create_request(
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: str, ctx: OrgAuthContext = Depends(resolve_org_context)):
-    req = data_subject_requests.find_one({"id": request_id, "org_id": ctx.org_id})
-
-    if not req:
-        raise HTTPException(status_code=404, detail="Request not found")
-
-    result = process_request(req)
-    local_tasks = list(request_tasks.find(
-        {"request_id": request_id, "$or": [{"org_id": ctx.org_id}, {"organisation_id": ctx.org_id}]},
-        {"_id": 0, "status": 1},
-    ))
-    has_pending_local = any(task.get("status") in {"pending", "in_progress"} for task in local_tasks)
-
-    data_subject_requests.update_one(
-        {"id": request_id, "org_id": ctx.org_id},
-        {"$set": {
-            "status": "in_progress" if has_pending_local else "completed",
-            "source_status": {"cloud": "completed", "local": "queued" if has_pending_local else "completed"},
-            "status_message": "Cloud processing completed. Waiting for local device results." if has_pending_local else "All selected sources finished scanning.",
-            "approved_at": datetime.now(),
-            "updated_at": datetime.now(),
-            **({} if has_pending_local else {"closed_at": datetime.now()}),
-        }}
-    )
-
-    return {
-        "message": "Approved. Cloud processing completed; local devices are still processing." if has_pending_local else "Approved and executed across the selected sources.",
-        "result": result,
-    }
+    """Back-compat alias: delegates to the unified approval flow so approval
+    always releases local device tasks, runs DB remediation, and enforces the
+    admin/owner permission check, instead of a second partial implementation."""
+    return await approve_unified_request(request_id, ctx)
 
 
 @router.post("/scan-cloud")
 async def scan_cloud(ctx: OrgAuthContext = Depends(resolve_org_context)):
-    cloud_objects = list_cloud_objects()
+    cloud_objects = list_cloud_objects(ctx.org_id)
     current_files = [obj["file"] for obj in cloud_objects]
     results = []
 
@@ -239,7 +144,7 @@ async def scan_cloud(ctx: OrgAuthContext = Depends(resolve_org_context)):
         )
         results.append(doc)
 
-    scan_jobs.insert_one({"id": str(uuid4()), "org_id": ctx.org_id, "source_type": "cloud_storage", "status": "completed", "task_type": "classification", "started_at": datetime.now(), "completed_at": datetime.now(), "result_summary": {"records_found": len(results), "locations": current_files}})
+    cloud_scan_logs.insert_one({"id": str(uuid4()), "org_id": ctx.org_id, "source_type": "cloud_storage", "status": "completed", "task_type": "classification", "started_at": datetime.now(), "completed_at": datetime.now(), "result_summary": {"records_found": len(results), "locations": current_files}})
     return {
         "message": "Cloud platforms scanned successfully",
         "total_files": len(results),
@@ -265,7 +170,7 @@ async def search_data(req: SearchRequest, ctx: OrgAuthContext = Depends(resolve_
     query = req.query.lower()
     matched_files = []
 
-    cloud_objects = list_cloud_objects()
+    cloud_objects = list_cloud_objects(ctx.org_id)
 
     for obj in cloud_objects:
         path = obj["file"]
@@ -386,12 +291,13 @@ async def connect_cloud_provider(
     now = datetime.now()
     source_id = str(uuid4())
 
-    # Create connected storage directory for realistic demo data access
+    # Create connected storage directory for realistic demo data access, scoped
+    # to this org so it never appears in another organisation's cloud scan.
     from pathlib import Path
     base_dir = Path(__file__).resolve().parents[2]
     clean_provider = provider_name.lower().replace(" ", "_").replace("/", "_")
     clean_bucket = bucket_name.lower().replace("/", "_")
-    connected_dir = base_dir / "cloud_connected" / clean_provider / clean_bucket
+    connected_dir = base_dir / "cloud_connected" / org_id / clean_provider / clean_bucket
     connected_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize sample compliance archive files if empty
