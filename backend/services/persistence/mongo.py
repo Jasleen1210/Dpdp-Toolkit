@@ -79,11 +79,13 @@ sessions = db["sessions"]
 data_sources = db["data_sources"]
 data_source_approval_requests = db["data_source_approval_requests"]
 agent_scan_logs = db["agent_scan_logs"]
+agent_cron_runs = db["agent_cron_runs"]
 cloud_scan_logs = db["cloud_scan_logs"]
 pii_classifications = db["pii_classifications"]
 data_subject_requests = db["data_subject_requests"]
 request_tasks = db["request_tasks"]
 data_source_vulnerabilities = db["data_source_vulnerabilities"]
+agent_cron_run_vulnerabilities = db["agent_cron_run_vulnerabilities"]
 audit_logs = db["audit_logs"]
 redaction_records = db["redaction_records"]
 
@@ -102,6 +104,8 @@ def ensure_indexes() -> None:
         (data_sources, ([("org_id", 1), ("source_type", 1), ("source_key", 1)],), {"unique": True}),
         (data_source_approval_requests, ([("org_id", 1), ("data_source_id", 1), ("status", 1)],), {}),
         (agent_scan_logs, ([("org_id", 1), ("data_source_id", 1), ("started_at", -1)],), {}),
+        (agent_cron_runs, ([("org_id", 1), ("device_id", 1), ("started_at", -1)],), {}),
+        (agent_cron_runs, ("id",), {"unique": True}),
         (cloud_scan_logs, ([("org_id", 1), ("started_at", -1)],), {}),
         (pii_classifications, ([("org_id", 1), ("data_source_id", 1), ("location", 1)],), {}),
         (pii_classifications, ([("org_id", 1), ("request_task_id", 1)],), {}),
@@ -113,6 +117,7 @@ def ensure_indexes() -> None:
         (request_tasks, ([("request_id", 1), ("data_source_id", 1)],), {"unique": True}),
         (request_tasks, ([("org_id", 1), ("status", 1), ("created_at", -1)],), {}),
         (data_source_vulnerabilities, ([("org_id", 1), ("data_source_id", 1)],), {"unique": True}),
+        (agent_cron_run_vulnerabilities, ([("org_id", 1), ("cron_run_id", 1)],), {"unique": True}),
         (audit_logs, ([("org_id", 1), ("created_at", -1)],), {}),
     ]
     for coll, args, kwargs in indexes:

@@ -59,7 +59,8 @@ are grouped by responsibility rather than by which feature added them:
 
 | Collection                                 | Purpose                                          | Important fields / key                                    |
 | ------------------------------------------ | ------------------------------------------------ | --------------------------------------------------------- |
-| `agent_scan_logs`                          | Local agent/device cron & scan execution history | `id`, `org_id`, `data_source_id`, start/status fields     |
+| `agent_scan_logs`                          | Legacy local agent scan execution history       | `id`, `org_id`, `data_source_id`, start/status fields     |
+| `agent_cron_runs`                           | Canonical local-agent daily cron execution runs | `id` (unique), `org_id`, `device_id`, `started_at`, status fields, vulnerability count |
 | `cloud_scan_logs`                          | Cloud storage scan execution history             | `id`, `org_id`, `started_at`, `result_summary`            |
 | `database_scan_runs` (`services/db/db.py`) | Database-engine scan execution history           | `id`, `organisation_id`, `source_id`, `status`, `summary` |
 
