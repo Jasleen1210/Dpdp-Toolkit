@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import type { DSRRequest } from "@/api/types";
+import type { TaskHistoryItem } from "@/api/localAgent";
+import { TaskCard } from "@/components/data-access/local/components/TaskCard";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getAuthHeaders } from "@/api/auth-headers";
@@ -52,8 +54,8 @@ function SubtabNav() {
           key={tab.href}
           to={tab.href}
           className={`px-3 py-2 text-[12px] font-medium whitespace-nowrap border-b-2 transition-colors ${location.pathname === tab.href
-              ? "border-primary text-primary"
-              : "border-transparent text-muted-foreground hover:text-foreground"
+            ? "border-primary text-primary"
+            : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
         >
           {tab.label}
@@ -81,11 +83,18 @@ function getTargetBadge(request: DSRRequest): string {
 }
 
 interface DetailedTask {
+  id?: string;
   task_id: string;
+  request_id?: string;
+  task_group_id?: string;
   device_id?: string;
   status: string;
   query?: string;
   type?: string;
+  paths?: string[];
+  created_at?: string;
+  expires_at?: string;
+  completed_at?: string;
   scanned_files: number;
   matches_count: number;
   pii_types: string[];
@@ -124,6 +133,32 @@ interface RequestDetailData {
   db_errors?: Array<{ source_id?: string; display_name?: string; error?: string }>;
 }
 
+function toTaskHistoryItem(task: DetailedTask): TaskHistoryItem {
+  const matches = task.matches || [];
+  return {
+    id: task.task_id || task.id || "",
+    request_id: task.request_id,
+    task_group_id: task.task_group_id,
+    device_id: task.device_id,
+    type: task.type,
+    query: task.query,
+    paths: task.paths || [],
+    status: task.status,
+    created_at: task.created_at,
+    expires_at: task.expires_at,
+    completed_at: task.completed_at,
+    scanned_files: task.scanned_files || 0,
+    matches_count: task.matches_count ?? matches.length,
+    pii_types: task.pii_types || [],
+    matches: matches.map((m) => ({
+      type: m.type || "",
+      value: m.value || "",
+      file: m.file || m.location || "",
+    })),
+    delete_replacements: task.delete_replacements,
+  };
+}
+
 function RequestCard({
   request,
   expanded,
@@ -144,6 +179,7 @@ function RequestCard({
   const targetTag = getTargetBadge(request);
   const [detail, setDetail] = useState<RequestDetailData | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!expanded) return;
@@ -216,25 +252,23 @@ function RequestCard({
       </button>
 
       {expanded && (
-        <div className="border-t border-border px-4 py-3.5 bg-card text-[12px] space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            <Detail label="Request ID" value={request.id} mono />
-            <Detail label="Request Type" value={formatLabel(request.type)} />
-            <Detail label="Target Scope" value={targetTag.toUpperCase()} />
-            <Detail label="Date Created" value={request.created} />
+        <div className="px-3 py-3 bg-card border-t border-border text-[12px] space-y-3">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div className="text-muted-foreground">Request ID: <span className="text-foreground">{request.id}</span></div>
+            <div className="text-muted-foreground">Type: <span className="text-foreground capitalize">{formatLabel(request.type)}</span></div>
+            <div className="text-muted-foreground">Target Scope: <span className="text-foreground uppercase">{targetTag}</span></div>
+            <div className="text-muted-foreground">Created: <span className="text-foreground">{request.created}</span></div>
           </div>
-          <div className="rounded-sm border border-border bg-muted/20 px-3 py-2">
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-              Data Subject Identifier
-            </div>
-            <div className="text-foreground break-all font-mono-data">{request.subject}</div>
+
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Data Subject Identifier</div>
+            <div className="text-[12px] text-foreground break-all">{request.subject}</div>
           </div>
+
           {request.devices && request.devices.length > 0 && (
-            <div className="rounded-sm border border-border bg-muted/20 px-3 py-2">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
-                Targeted Local Devices
-              </div>
-              <div className="text-foreground break-all">{request.devices.join(", ")}</div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Targeted Local Devices</div>
+              <div className="text-[12px] text-foreground break-all">{request.devices.join(", ")}</div>
             </div>
           )}
 
@@ -246,74 +280,62 @@ function RequestCard({
           )}
 
           {detail && detail.local_tasks && detail.local_tasks.length > 0 && (
-            <div className="space-y-2 pt-1">
-              <div className="text-[11px] font-semibold text-foreground">
-                Local Device Scan & Remediation Results
-              </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Local Device Scan & Remediation Results</div>
               <div className="space-y-2">
-                {detail.local_tasks.map((t) => (
-                  <div
-                    key={t.task_id}
-                    className="rounded-sm border border-border bg-muted/20 p-2.5 text-[11px] space-y-1.5"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
-                      <span>Device: <strong className="text-foreground font-mono">{t.device_id || "-"}</strong></span>
-                      <span>Files Scanned: <strong className="text-foreground font-mono">{t.scanned_files}</strong></span>
-                      <span>Matches: <strong className="text-foreground font-mono">{t.matches_count}</strong></span>
-                      <span className="capitalize">Status: <strong className="text-foreground">{t.status}</strong></span>
+                {detail.local_tasks.map((t) => {
+                  const taskId = t.task_id || t.id || "";
+                  return (
+                    <div key={taskId} className="space-y-1.5">
+                      <TaskCard
+                        task={toTaskHistoryItem(t)}
+                        expanded={Boolean(expandedTaskIds[taskId])}
+                        onToggle={() =>
+                          setExpandedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }))
+                        }
+                      />
+
+                      {t.delete_replacements && t.delete_replacements.length > 0 && (
+                        <div className="space-y-1 bg-muted/40 p-2 rounded-sm font-mono text-[10px]">
+                          <div className="text-muted-foreground font-semibold uppercase text-[9px]">Redaction Log:</div>
+                          {t.delete_replacements.map((r, i) => (
+                            <div key={i} className="text-muted-foreground">
+                              [REDACTED] <span className="text-foreground">{r.file}</span>: {r.original_value} → {r.masked_value}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {t.status_reason && (
+                        <div className="text-[11px] text-warning">{t.status_reason}</div>
+                      )}
                     </div>
-
-                    {t.delete_replacements && t.delete_replacements.length > 0 && (
-                      <div className="mt-1 space-y-1 bg-muted/40 p-2 rounded-sm font-mono text-[10px]">
-                        <div className="text-muted-foreground font-semibold uppercase text-[9px]">Redaction Log:</div>
-                        {t.delete_replacements.map((r, i) => (
-                          <div key={i} className="text-muted-foreground">
-                            [REDACTED] <span className="text-foreground">{r.file}</span>: {r.original_value} → {r.masked_value}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {t.status_reason && (
-                      <div className="text-warning">{t.status_reason}</div>
-                    )}
-
-                    {t.matches && t.matches.length > 0 && (
-                      <div className="mt-1 space-y-1 bg-muted/40 p-2 rounded-sm font-mono text-[10px]">
-                        <div className="text-muted-foreground font-semibold uppercase text-[9px]">Matches Found:</div>
-                        {t.matches.map((m, i) => (
-                          <div key={i} className="text-muted-foreground">
-                            [FOUND] <span className="text-foreground">{m.file || m.location}</span>: {m.value || m.type}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
 
-          <div className="rounded-sm border border-border bg-muted/20 px-3 py-2 text-[11px]">
-            <div className="font-semibold text-foreground">Processing update</div>
-            <div className="mt-1 text-muted-foreground">
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Processing update</div>
+            <div className="text-[12px] text-muted-foreground break-all">
               {request.status_message || "Status is being synchronized from the selected sources."}
             </div>
             {request.source_status && Object.keys(request.source_status).length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {Object.entries(request.source_status).map(([source, sourceStatus]) => (
                   <span key={source} className="rounded-sm border border-border px-2 py-0.5 uppercase text-[10px]">
-                    {source}: {sourceStatus}
+                    {source}: {sourceStatus as React.ReactNode}
                   </span>
                 ))}
               </div>
             )}
-            {request.cloud_error && <div className="mt-1 text-destructive">Cloud: {request.cloud_error}</div>}
+            {request.cloud_error && <div className="mt-1 text-[12px] text-destructive">Cloud: {request.cloud_error}</div>}
           </div>
 
-                  {detail && detail.cloud_results && detail.cloud_results.length > 0 && (
-            <div className="space-y-1 pt-1">
-              <div className="text-[11px] font-semibold text-foreground">Cloud Storage Results</div>
+          {detail && detail.cloud_results && detail.cloud_results.length > 0 && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Cloud Storage Results</div>
               <div className="bg-muted/20 border border-border rounded-sm p-2 font-mono text-[10px] space-y-1 text-muted-foreground">
                 {detail.cloud_results.map((c, i) => (
                   <div key={i}>
@@ -333,10 +355,10 @@ function RequestCard({
             );
             const allCompleted = results.every((r) => (r.status || "completed") === "completed");
             return (
-              <div className="space-y-2 pt-1">
-                <div className="text-[11px] font-semibold text-foreground">Database Results</div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Database Results</div>
                 {allCompleted && (
-                  <div className="rounded-sm border border-success/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-600">
+                  <div className="rounded-sm border border-success/30 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-600 mb-2">
                     Database request completed successfully — {totalRows} row{totalRows === 1 ? "" : "s"} changed across {totalLocations} table{totalLocations === 1 ? "" : "s"}/location{totalLocations === 1 ? "" : "s"}.
                   </div>
                 )}
@@ -397,25 +419,6 @@ function RequestCard({
           </div>
         </div>
       )}
-    </div>
-  );
-}
-
-function Detail({
-  label,
-  value,
-  mono = false,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div className="rounded-sm border border-border bg-muted/20 px-3 py-2">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-foreground break-all ${mono ? "font-mono-data" : ""}`}>
-        {value || "-"}
-      </div>
     </div>
   );
 }
@@ -900,7 +903,7 @@ export default function RequestsPage() {
           </div>
         ) : filteredAndSorted.length ? (
           filteredAndSorted.map((request) => (
-              <RequestCard
+            <RequestCard
               key={request.id}
               request={request}
               expanded={!!expandedIds[request.id]}
@@ -912,7 +915,7 @@ export default function RequestsPage() {
               }
               onApprove={handleApprove}
               approving={approvingId === request.id}
-                authHeaders={authHeaders}
+              authHeaders={authHeaders}
             />
           ))
         ) : (
@@ -968,38 +971,32 @@ export default function RequestsPage() {
 
               {/* Request Type */}
               <div>
-                <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5">
                   Request Type
                 </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {(
-                    [
-                      { key: "delete", label: "Delete" },
-                      { key: "access", label: "Access" },
-                      { key: "update", label: "Update" },
-                    ] as const
-                  ).map((t) => (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => setCreateType(t.key)}
-                      className={`p-2 rounded-sm border text-[11px] text-center transition-colors ${createType === t.key
-                          ? "bg-primary/15 text-primary border-primary font-medium"
-                          : "border-border text-muted-foreground hover:bg-muted/30"
-                        }`}
-                    >
-                      {t.label}
-                    </button>
+                <div className="flex gap-4 items-center bg-muted/20 p-2 rounded-sm border border-border">
+                  {(["delete", "access", "update"] as const).map((type) => (
+                    <label key={type} className="flex items-center gap-2 capitalize cursor-pointer">
+                      <input
+                        type="radio"
+                        name="createType"
+                        value={type}
+                        checked={createType === type}
+                        onChange={() => setCreateType(type)}
+                        className="accent-primary h-3.5 w-3.5"
+                      />
+                      <span className="text-foreground text-[12px]">{type}</span>
+                    </label>
                   ))}
                 </div>
               </div>
 
               {/* Target Infrastructure */}
               <div>
-                <label className="block text-[11px] font-medium text-muted-foreground mb-1">
+                <label className="block text-[11px] font-medium text-muted-foreground mb-1.5">
                   Target Infrastructure
                 </label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="flex flex-col gap-2.5 bg-muted/20 p-2.5 rounded-sm border border-border">
                   {(
                     [
                       { key: "all", label: "All Storage (Cloud + Local + DB)" },
@@ -1008,17 +1005,17 @@ export default function RequestsPage() {
                       { key: "db", label: "Database Sources" },
                     ] as const
                   ).map((tgt) => (
-                    <button
-                      key={tgt.key}
-                      type="button"
-                      onClick={() => setCreateTarget(tgt.key)}
-                      className={`p-2 rounded-sm border text-[11px] text-left transition-colors ${createTarget === tgt.key
-                          ? "bg-primary/15 text-primary border-primary font-medium"
-                          : "border-border text-muted-foreground hover:bg-muted/30"
-                        }`}
-                    >
-                      {tgt.label}
-                    </button>
+                    <label key={tgt.key} className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="createTarget"
+                        value={tgt.key}
+                        checked={createTarget === tgt.key}
+                        onChange={() => setCreateTarget(tgt.key)}
+                        className="accent-primary h-3.5 w-3.5"
+                      />
+                      <span className="text-foreground text-[12px]">{tgt.label}</span>
+                    </label>
                   ))}
                 </div>
               </div>

@@ -18,6 +18,9 @@ import (
 	"dpdp-toolkit/agent-go/internal/gui"
 	"dpdp-toolkit/agent-go/internal/scanner"
 	"dpdp-toolkit/agent-go/internal/types"
+
+	"github.com/joho/godotenv"
+	"github.com/shirou/gopsutil/v3/process"
 )
 
 const agentVersion = "0.1.0"
@@ -176,6 +179,8 @@ func main() {
 			log.Fatalf("status failed: %v", err)
 		}
 		fmt.Println(statusLabel(status))
+	case "list":
+		listRunningAgents()
 	case "run":
 		if service.Interactive() {
 			prg.cfg = promptForScanPathsIfNeeded(cfg)
@@ -184,7 +189,7 @@ func main() {
 			log.Fatalf("run failed: %v", err)
 		}
 	default:
-		fmt.Printf("usage: %s [run|install|uninstall|start|stop|restart|status]\n", filepath.Base(os.Args[0]))
+		fmt.Printf("usage: %s [run|install|uninstall|start|stop|restart|status|list]\n", filepath.Base(os.Args[0]))
 		os.Exit(2)
 	}
 }
@@ -218,4 +223,86 @@ func promptForScanPathsIfNeeded(cfg config.Config) config.Config {
 	}
 	cfg.ScanPaths = paths
 	return cfg
+}
+
+func listRunningAgents() {
+	fmt.Printf("%-10s %-30s %-20s %-20s\n", "PID", "EXECUTABLE", "ORG_ID", "SERVER_URL")
+	fmt.Println(strings.Repeat("-", 85))
+
+	procs, err := process.Processes()
+	if err != nil {
+		log.Fatalf("failed to list processes: %v", err)
+	}
+
+	myPid := int32(os.Getpid())
+
+	for _, p := range procs {
+		if p.Pid == myPid {
+			continue
+		}
+
+		exe, err := p.Exe()
+		if err != nil {
+			continue
+		}
+
+		name := filepath.Base(exe)
+		if !strings.Contains(strings.ToLower(name), "agent") && !strings.Contains(strings.ToLower(name), "dpdp") {
+			continue
+		}
+
+		cmdline, err := p.CmdlineSlice()
+		if err != nil || len(cmdline) == 0 {
+			continue
+		}
+
+		orgID := ""
+		serverURL := ""
+
+		envs, err := p.Environ()
+		if err == nil {
+			for _, env := range envs {
+				if strings.HasPrefix(env, "ORG_ID=") {
+					orgID = strings.TrimPrefix(env, "ORG_ID=")
+				} else if strings.HasPrefix(env, "SERVER_URL=") {
+					serverURL = strings.TrimPrefix(env, "SERVER_URL=")
+				}
+			}
+		}
+
+		if orgID == "" {
+			cwd, _ := p.Cwd()
+			if cwd != "" {
+				envMap, _ := godotenv.Read(filepath.Join(cwd, ".env"))
+				if v, ok := envMap["ORG_ID"]; ok {
+					orgID = v
+				}
+				if v, ok := envMap["SERVER_URL"]; ok {
+					serverURL = v
+				}
+			}
+		}
+
+		if orgID == "" {
+			envMap, _ := godotenv.Read(filepath.Join(filepath.Dir(exe), ".env"))
+			if v, ok := envMap["ORG_ID"]; ok {
+				orgID = v
+			}
+			if v, ok := envMap["SERVER_URL"]; ok {
+				serverURL = v
+			}
+		}
+
+		if orgID == "" && !strings.Contains(strings.ToLower(name), "dpdp") && !strings.Contains(strings.ToLower(name), "agent-go") {
+			continue
+		}
+		if orgID == "" {
+			orgID = "<unknown>"
+		}
+		if serverURL == "" {
+			serverURL = "<unknown>"
+		}
+
+		fmt.Printf("%-10d %-30s %-20s %-20s\n", p.Pid, name, orgID, serverURL)
+	}
 }

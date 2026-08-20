@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -41,6 +42,11 @@ func uniqueMatchFileCount(matches []types.Match) int {
 }
 
 func modifyLocalFile(filePath, actionType, targetValue, newValue string) error {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == ".pdf" {
+		return fmt.Errorf("PDF files are not updatable")
+	}
+
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return err

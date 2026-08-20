@@ -69,12 +69,14 @@ class RequestStateManager:
             return None
         
         # Fetch all tasks for this request
-        local_tasks = list(
+        task_docs = list(
             request_tasks.find(
                 {"request_id": request_id, "org_id": org_id},
                 {"_id": 0}
             )
         )
+
+        local_tasks = RequestStateManager.attach_local_task_results(task_docs, org_id)
         
         # Fetch cloud results from pii_classifications
         cloud_results = list(
@@ -96,6 +98,57 @@ class RequestStateManager:
             "db_errors": req.get("db_errors", []),
         }
     
+    @staticmethod
+    def attach_local_task_results(task_docs: List[dict], org_id: str) -> List[dict]:
+        """
+        Merges each local device task with the scan result submitted by the agent
+        (stored in pii_classifications), so callers receive the full finding
+        details: scanned file counts, detected PII types and per-match rows.
+        """
+        if not task_docs:
+            return []
+ 
+        task_ids = [task["id"] for task in task_docs if task.get("id")]
+        results = list(
+            pii_classifications.find(
+                {
+                    "$and": [
+                        {
+                            "$or": [
+                                {"request_task_id": {"$in": task_ids}},
+                                {"task_id": {"$in": task_ids}},
+                            ]
+                        },
+                        {"$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
+                    ]
+                },
+                {"_id": 0},
+            )
+        )
+ 
+        result_by_task = {}
+        for result in results:
+            key = result.get("request_task_id") or result.get("task_id")
+            if key:
+                result_by_task[key] = result
+ 
+        enriched = []
+        for task in task_docs:
+            task_id = task.get("id")
+            result = result_by_task.get(task_id) or {}
+            matches = result.get("matches", [])
+            enriched.append({
+                **task,
+                "task_id": task_id,
+                "scanned_files": result.get("scanned_files", 0),
+                "matches_count": len(matches),
+                "pii_types": sorted({m.get("type", "") for m in matches if m.get("type")}),
+                "matches": matches,
+                "delete_replacements": result.get("delete_replacements", []),
+            })
+ 
+        return enriched
+ 
     @staticmethod
     def normalize_status(
         req_status: str,

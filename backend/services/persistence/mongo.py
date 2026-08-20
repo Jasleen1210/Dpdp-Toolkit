@@ -32,6 +32,10 @@ def _make_client():
     for attempt in range(max_retries):
         try:
             print(f"[MongoDB] Attempting connection (attempt {attempt + 1}/{max_retries})...")
+            
+            # Use certifi to provide the CA bundle for macOS and environments where SSL verification fails
+            import certifi
+            
             client = MongoClient(
                 atlas_url,
                 serverSelectionTimeoutMS=25000,  # 25 seconds
@@ -41,7 +45,7 @@ def _make_client():
                 read_preference=ReadPreference.PRIMARY_PREFERRED,
                 directConnection=False,
                 appName="dpdp-app",
-                
+                tlsCAFile=certifi.where(),
                 maxPoolSize=50,
                 minPoolSize=10,
             )
