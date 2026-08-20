@@ -76,7 +76,7 @@ def list_s3_objects():
 
 def read_s3_file(path):
     if not s3 or not AWS_BUCKET:
-        return ""
+        return b""
 
     object_key = extract_object_key(path)
     try:
@@ -84,11 +84,10 @@ def read_s3_file(path):
             Bucket=AWS_BUCKET,
             Key=object_key,
         )
-        content = response["Body"].read()
-        return content.decode("utf-8", errors="ignore")
+        return response["Body"].read()  # raw bytes — caller handles extraction
     except Exception as e:
         print(f"S3 read error for {object_key}: {e}")
-        return ""
+        return b""
 
 
 def write_s3_file(path, content):
