@@ -31,13 +31,19 @@ export interface DSRRequest {
   id: string;
   type: "delete" | "access" | "update";
   subject: string;
-  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval";
+  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval" | "error" | "cancelled";
   created: string;
-  sla_remaining: string;
+  created_at?: string;
   handler: "auto" | "manual" | string;
   devices?: string[];
   tasks_count?: number;
+  tasks_completed?: number;
   source_types?: string[];
+  target_sources?: string[];
+  requires_approval?: boolean;
+  source_status?: Record<string, string>;
+  status_message?: string;
+  cloud_error?: string;
 }
 
 export interface Vendor {

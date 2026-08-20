@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -80,6 +81,11 @@ func applyDeletePlan(ctx context.Context, apiClient *client.Client, plan remedia
 }
  
 func redactDeleteFile(filePath, targetValue string) (deleteRedactionResult, error) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if ext == ".pdf" {
+		return deleteRedactionResult{}, fmt.Errorf("PDF files are not updatable")
+	}
+
 	result, updated, err := buildDeleteRedaction(filePath, targetValue)
 	if err != nil {
 		return deleteRedactionResult{}, err

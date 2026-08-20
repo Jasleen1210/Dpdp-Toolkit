@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { VulnerabilityTable } from "./VulnerabillityTable";
+import { VulnerabilityTable } from "./VulnerabilityTable";
 import {
   getDeviceVulnerabilities,
   type Device,
@@ -70,18 +70,16 @@ export function DeviceCard({
       <div className="flex items-center justify-between gap-2">
         <div className="font-medium text-foreground break-all">{device.device_id}</div>
         <div className="flex items-center gap-1">
-          <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
-            deviceActive
-              ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
-              : "border-muted-foreground/30 bg-muted text-muted-foreground"
-          }`}>
+          <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${deviceActive
+            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-600"
+            : "border-muted-foreground/30 bg-muted text-muted-foreground"
+            }`}>
             {deviceActive ? "Active" : "Inactive"}
           </span>
-          <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
-            device.approved
-              ? "border-primary/30 bg-primary/15 text-primary"
-              : "border-warning/30 bg-warning/15 text-warning"
-          }`}>
+          <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${device.approved
+            ? "border-primary/30 bg-primary/15 text-primary"
+            : "border-warning/30 bg-warning/15 text-warning"
+            }`}>
             {device.approved ? "Approved" : "Pending"}
           </span>
           {!device.approved && (
@@ -100,16 +98,15 @@ export function DeviceCard({
         <div>Org: <span className="text-foreground">{device.organisation_id || orgId}</span></div>
         <div>Last Seen: <span className="text-foreground">{formatDate(device.last_seen)}</span></div>
 
-        <div className="mt-2 rounded-sm border border-border bg-background/70 px-2 py-2 space-y-1">
+        {/* <div className="mt-2 rounded-sm border border-border bg-background/70 px-2 py-2 space-y-1">
           <div className="flex items-center justify-between gap-2">
             <div className="text-[11px] uppercase tracking-wider text-muted-foreground">
               Daily Scan Report {dailyReportDate ? `(${dailyReportDate})` : ""}
             </div>
-            <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${
-              scannedToday
-                ? "border-primary/30 bg-primary/15 text-primary"
-                : "border-muted-foreground/30 bg-muted text-muted-foreground"
-            }`}>
+            <span className={`px-2 py-0.5 rounded-sm border text-[10px] uppercase ${scannedToday
+              ? "border-primary/30 bg-primary/15 text-primary"
+              : "border-muted-foreground/30 bg-muted text-muted-foreground"
+              }`}>
               {scannedToday ? "Scanned Today" : "Not Scanned"}
             </span>
           </div>
@@ -129,15 +126,15 @@ export function DeviceCard({
               ))}
             </div>
           ) : null}
-        </div>
+        </div> */}
 
         {/* Vulnerability table sits below daily scan report */}
-        <VulnerabilityTable
+        {/* <VulnerabilityTable
           vulnerabilities={vulns}
           summary={vulnSummary}
           updatedAt={vulnUpdatedAt}
           loading={vulnLoading}
-        />
+        /> */}
       </div>
     </div>
   );

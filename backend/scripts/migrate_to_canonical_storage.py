@@ -18,7 +18,7 @@ from uuid import uuid4
 from backend.services.persistence.mongo import (
     client, data_source_approval_requests, data_source_vulnerabilities,
     data_sources, data_subject_requests, pii_classifications, request_tasks,
-    scan_jobs, users, organizations, org_memberships, sessions,
+    agent_scan_logs, cloud_scan_logs, users, organizations, org_memberships, sessions,
 )
 
 DEFAULT_ORG_ID = os.getenv("ORG_ID", "dpdp-org").strip() or "dpdp-org"
@@ -82,7 +82,7 @@ def migrate_local(apply: bool, counts: dict):
             continue
         request_id = task.get("request_id") or task_request_ids.setdefault(task.get("task_group_id") or task_id, str(uuid4()))
         task_request_ids[task.get("task_group_id") or task_id] = request_id
-        request_type = {"update": "correction", "delete": "erasure"}.get(task.get("type", "access"), task.get("type", "access"))
+        request_type = task.get("type", "access").lower()
         request_doc = {"id": request_id, "org_id": org_id, "request_type": request_type, "data_principal": {"identifier_hash": (task.get("query") or "").split("::", 1)[0].lower()}, "verification_status": "verified", "status": "completed" if task.get("status") == "completed" else "in_progress", "sla_due_at": task.get("expires_at"), "submitted_via": "api", "created_at": task.get("created_at", now()), "updated_at": task.get("updated_at", task.get("created_at", now()))}
         upsert(data_subject_requests, {"id": request_id}, request_doc, apply, counts, "data_subject_requests")
         task.update({"request_id": request_id, "org_id": org_id, "organisation_id": org_id, "data_source_id": source_ids.get((org_id, task.get("device_id")), task.get("device_id")), "source_type": "local_device"})
@@ -112,7 +112,7 @@ def migrate_local(apply: bool, counts: dict):
     for log in source["device_cron_logs"].find({}, {"_id": 0}):
         org_id, device_id = log.get("organisation_id", DEFAULT_ORG_ID), log.get("device_id")
         log.update({"id": log.get("id") or str(uuid4()), "org_id": org_id, "data_source_id": source_ids.get((org_id, device_id), device_id), "source_type": "local_device"})
-        upsert(scan_jobs, {"org_id": org_id, "data_source_id": log["data_source_id"], "started_at": log.get("started_at")}, log, apply, counts, "scan_jobs")
+        upsert(agent_scan_logs, {"org_id": org_id, "data_source_id": log["data_source_id"], "started_at": log.get("started_at")}, log, apply, counts, "agent_scan_logs")
     for vuln in source["device_vulnerabilities"].find({}, {"_id": 0}):
         org_id, device_id = vuln.get("organisation_id", DEFAULT_ORG_ID), vuln.get("device_id")
         vuln.update({"org_id": org_id, "data_source_id": source_ids.get((org_id, device_id), device_id), "source_type": "local_device"})
@@ -130,12 +130,12 @@ def migrate_cloud(apply: bool, counts: dict):
         item.update({"id": item.get("id") or str(uuid4()), "org_id": org_id, "data_source_id": data_source_id, "source_type": "cloud_storage", "location": item.get("location", item.get("file")), "classified_at": item.get("updated_at", now())})
         upsert(pii_classifications, {"org_id": org_id, "data_source_id": data_source_id, "location": item["location"]}, item, apply, counts, "pii_classifications")
     for req in source["user_requests"].find({}, {"_id": 0}):
-        request_id = req.get("id") or str(uuid4()); request_type = {"UPDATE": "correction", "DELETE": "erasure"}.get(req.get("type", "ACCESS").upper(), "access")
+        request_id = req.get("id") or str(uuid4()); request_type = req.get("type", "ACCESS").lower()
         req.update({"id": request_id, "org_id": org_id, "request_type": request_type, "data_principal": {"identifier_hash": (req.get("identifier") or "").lower()}, "verification_status": "verified", "submitted_via": "api", "sla_due_at": req.get("sla_due_at", now() + timedelta(days=30)), "updated_at": req.get("updated_at", req.get("created_at", now()))})
         upsert(data_subject_requests, {"id": request_id}, req, apply, counts, "data_subject_requests")
     for log in source["cloud_logs"].find({}, {"_id": 0}):
         log.update({"id": log.get("id") or str(uuid4()), "org_id": org_id, "source_type": "cloud_storage", "started_at": log.get("timestamp", now())})
-        upsert(scan_jobs, {"org_id": org_id, "source_type": "cloud_storage", "started_at": log["started_at"], "task_type": log.get("action")}, log, apply, counts, "scan_jobs")
+        upsert(cloud_scan_logs, {"org_id": org_id, "source_type": "cloud_storage", "started_at": log["started_at"], "task_type": log.get("action")}, log, apply, counts, "cloud_scan_logs")
 
 
 def main():

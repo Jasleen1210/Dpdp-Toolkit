@@ -9,6 +9,7 @@ import {
   listMyOrganisations,
   scanDatabaseSource,
   deleteUpdateDatabaseSource,
+  maskDatabaseSource,
   type DatabaseFinding,
   type DatabaseSource,
   type OrganisationSummary,
@@ -57,7 +58,7 @@ export default function DatabaseScannerPanel() {
   const [scanAuth, setScanAuth] = useState(false);
 
   const [remediateIdentifier, setRemediateIdentifier] = useState("");
-  const [remediateAction, setRemediateAction] = useState<"UPDATE" | "DELETE">("UPDATE");
+  const [remediateAction, setRemediateAction] = useState<"UPDATE" | "DELETE" | "MASK">("UPDATE");
   const [remediateReplacement, setRemediateReplacement] = useState("");
   const [remediateResult, setRemediateResult] = useState<{
     impacted_locations: number;
@@ -83,6 +84,10 @@ export default function DatabaseScannerPanel() {
       const response = await listMyOrganisations(token);
 
       setOrganisations(response.organisations);
+
+      if (!response.organisations.length) {
+        setError("You are not in an organisation yet. Join an organisation from Profile using an invite code, then try again.");
+      }
 
       setOrganisationId((current) => {
         if (
@@ -321,14 +326,21 @@ export default function DatabaseScannerPanel() {
     setRemediateResult(null);
 
     try {
-      const response = await deleteUpdateDatabaseSource(
-        token,
-        organisationId,
-        selectedSourceId,
-        remediateIdentifier,
-        remediateAction,
-        remediateAction === "UPDATE" ? (remediateReplacement || "[REDACTED]") : null,
-      );
+      const response = remediateAction === "MASK"
+        ? await maskDatabaseSource(
+            token,
+            organisationId,
+            selectedSourceId,
+            remediateIdentifier,
+          )
+        : await deleteUpdateDatabaseSource(
+            token,
+            organisationId,
+            selectedSourceId,
+            remediateIdentifier,
+            remediateAction,
+            remediateAction === "UPDATE" ? (remediateReplacement || "[REDACTED]") : null,
+          );
 
       setRemediateResult({
         impacted_locations: response.impacted_locations,
@@ -336,7 +348,7 @@ export default function DatabaseScannerPanel() {
       });
 
       setMessage(
-        `Changes made successfully. ${remediateAction === "UPDATE" ? "Redacted" : "Deleted"
+        `Changes made successfully. ${remediateAction === "UPDATE" ? "Redacted" : remediateAction === "MASK" ? "Masked" : "Deleted"
         } target PII value across ${response.impacted_locations} table(s), affecting ${response.impacted_rows
         } row(s).`,
       );
@@ -703,11 +715,13 @@ export default function DatabaseScannerPanel() {
                 value={remediateAction}
                 onChange={(e) =>
                   setRemediateAction(
-                    e.target.value as "UPDATE" | "DELETE",
+                    e.target.value as "UPDATE" | "DELETE" | "MASK",
                   )
                 }
               >
                 <option value="UPDATE">Redact (SQL REPLACE)</option>
+
+                <option value="MASK">Mask (same as local agent)</option>
 
                 <option value="DELETE">Delete Row</option>
               </select>

@@ -205,10 +205,10 @@ export async function deleteUpdateDatabaseSource(
   organisationId: string,
   sourceId: string,
   identifier: string,
-  action: "UPDATE" | "DELETE",
+  action: "UPDATE" | "DELETE" | "MASK",
   newValue: string | null,
 ): Promise<{
-  action: "UPDATE" | "DELETE";
+  action: "UPDATE" | "DELETE" | "MASK";
   identifier: string;
   status: string;
   message: string;
@@ -217,7 +217,7 @@ export async function deleteUpdateDatabaseSource(
   new_value?: string | null;
 }> {
   return request<{
-    action: "UPDATE" | "DELETE";
+    action: "UPDATE" | "DELETE" | "MASK";
     identifier: string;
     status: string;
     message: string;
@@ -236,6 +236,40 @@ export async function deleteUpdateDatabaseSource(
         action,
         new_value: newValue,
       }),
+    },
+  );
+}
+
+export async function maskDatabaseSource(
+  token: string | null,
+  organisationId: string,
+  sourceId: string,
+  identifier: string,
+): Promise<{
+  action: "MASK";
+  identifier: string;
+  status: string;
+  message: string;
+  impacted_locations: number;
+  impacted_rows: number;
+  new_value?: string | null;
+}> {
+  return request<{
+    action: "MASK";
+    identifier: string;
+    status: string;
+    message: string;
+    impacted_locations: number;
+    impacted_rows: number;
+    new_value?: string | null;
+  }>(
+    `/database/sources/${encodeURIComponent(
+      sourceId,
+    )}/mask?organisation_id=${encodeURIComponent(organisationId)}`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ identifier }),
     },
   );
 }

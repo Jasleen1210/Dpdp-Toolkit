@@ -13,11 +13,11 @@ try:
         validate_source_config,
     )
     from backend.services.db.db import (
-        database_audit_logs_collection,
         database_findings_collection,
         database_scan_runs_collection,
         database_sources_collection,
     )
+    from backend.services.persistence.mongo import audit_logs
     from backend.services.db.scanner import scan_database
     from backend.services.db.delete_update import manage_database_data
 except ImportError:
@@ -29,11 +29,11 @@ except ImportError:
         validate_source_config,
     )
     from services.db.db import (
-        database_audit_logs_collection,
         database_findings_collection,
         database_scan_runs_collection,
         database_sources_collection,
     )
+    from services.persistence.mongo import audit_logs
     from services.db.scanner import scan_database
     from services.db.delete_update import manage_database_data
 
@@ -103,12 +103,16 @@ def _write_audit(
     status: str,
     details: Mapping[str, Any] | None = None,
 ) -> None:
-    database_audit_logs_collection.insert_one(
+    audit_logs.insert_one(
         {
             "id": str(uuid4()),
+            "actor_type": "user",
+            "actor_id": user_id,
+            "entity_type": "database_source",
+            "org_id": organisation_id,
             "organisation_id": organisation_id,
+            "source_type": "database",
             "source_id": source_id,
-            "user_id": user_id,
             "action": action,
             "status": status,
             "details": dict(details or {}),

@@ -255,7 +255,14 @@ def _require_org_membership(user_id: str, organisation_id: str) -> dict:
         {"_id": 0},
     )
     if not membership:
-        raise HTTPException(status_code=403, detail="Not a member of this organisation")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You are not a member of this organisation. "
+                "Join the organisation from Profile using an invite code, "
+                "or select an organisation you already belong to."
+            ),
+        )
     return membership
 
 

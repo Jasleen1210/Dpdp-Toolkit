@@ -64,7 +64,7 @@ export const NAV_ITEMS: NavItem[] = [
       { label: "All Requests", href: "/requests" },
       { label: "Delete Requests", href: "/requests/delete" },
       { label: "Access Requests", href: "/requests/access" },
-      { label: "Correction Requests", href: "/requests/correction" },
+      { label: "Update Requests", href: "/requests/update" },
       { label: "Workflow Queue", href: "/requests/queue" },
     ],
   },

@@ -11,6 +11,7 @@ from .models import DeviceRegisterRequest, DeviceApprovalRequest, DeviceHeartbea
 from backend.services.persistence.mongo import (
     data_source_approval_requests as device_approval_requests_collection,
     data_sources as devices_collection,
+    pii_classifications as device_results_collection,
     users as users_collection,
 )
 

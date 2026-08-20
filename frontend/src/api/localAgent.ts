@@ -4,7 +4,7 @@ export type LocalAgentApiConfig = {
   adminKey?: string;
   agentToken?: string;
 };
-
+ 
 export type Device = {
   device_id: string;
   hostname?: string;
@@ -18,8 +18,9 @@ export type Device = {
   approved_by?: string | null;
   approved_by_email?: string | null;
   approved_at?: string | null;
+  source_type?: "local_device" | "cloud_storage" | "db_storage";
 };
-
+ 
 export type DeviceTask = {
   id: string;
   query: string;
@@ -27,40 +28,40 @@ export type DeviceTask = {
   expires_at?: string;
   paths?: string[];
 };
-
+ 
 export type TaskSummary = {
   id: string;
   device_id: string;
   expires_at: string;
 };
-
+ 
 export type CreateTaskRequest = {
   action_type: "access" | "update" | "delete";
   target_value: string; // The email, name, or string pattern to look up
   device_id: string; // The specific targeted system identifier
   new_value?: string; // Required ONLY when action_type is "update"
 };
-
+ 
 export type CreateTaskResponse = {
   task_group_id: string;
   tasks_created: number;
   tasks: TaskSummary[];
 };
-
+ 
 export type RegisterDeviceRequest = {
   device_id: string;
   hostname: string;
   agent_version: string;
   organisation_id?: string;
 };
-
+ 
 export type RegisterDeviceResponse = {
   device_id: string;
   organisation_id: string;
   approved: boolean;
   message: string;
 };
-
+ 
 export type DeviceApprovalRequestItem = {
   id?: string;
   device_id: string;
@@ -74,18 +75,18 @@ export type DeviceApprovalRequestItem = {
   resolved_by?: string | null;
   approved_by_email?: string | null;
 };
-
+ 
 export type ApproveDeviceRequest = {
   device_id: string;
   approved: boolean;
 };
-
+ 
 export type TaskResultMatch = {
   type: string;
   value: string;
   file: string;
 };
-
+ 
 export type SubmitResultRequest = {
   task_id: string;
   device_id: string;
@@ -93,13 +94,13 @@ export type SubmitResultRequest = {
   scanned_files: number;
   matches: TaskResultMatch[];
 };
-
+ 
 export type TaskGroupResultResponse = {
   task_group_id: string;
   tasks: Array<Record<string, unknown>>;
   results: Array<Record<string, unknown>>;
 };
-
+ 
 export type TaskHistoryItem = {
   id: string;
   request_id?: string;
@@ -123,7 +124,7 @@ export type TaskHistoryItem = {
     block_signature: string;
   }>;
 };
-
+ 
 export type DeviceDailyScanReportItem = {
   device_id: string;
   hostname?: string;
@@ -138,7 +139,45 @@ export type DeviceDailyScanReportItem = {
   matches_count: number;
   pii_types: string[];
 };
-
+ 
+export type CronRunItem = {
+  run_id: string;
+  device_id: string;
+  organisation_id?: string;
+  org_id?: string;
+  task_type: string;
+  status?: string | null;
+  started_at?: string | null;
+  duration_elapsed?: string | null;
+  error_message?: string | null;
+  completed_at?: string | null;
+  vulnerability_count?: number | null;
+  reported_at?: string | null;
+};
+ 
+export type CronRunVulnerabilityItem = {
+  title?: string | null;
+  data_type?: string | null;
+  exposure_type?: string | null;
+  priority_score?: number | null;
+  match_count?: number | null;
+  path_or_port?: string | null;
+  status?: string | null;
+};
+ 
+export type CronRunVulnerabilitiesResponse = {
+  cron_run_id: string;
+  device_id: string;
+  detail_retained: boolean;
+  summary: {
+    total_vulnerabilities?: number;
+    total_exposed_matches?: number;
+    max_priority_score?: number;
+  };
+  vulnerabilities: CronRunVulnerabilityItem[];
+  updated_at?: string;
+};
+ 
 export type OrganisationInfo = {
   id: string;
   name: string;
@@ -148,16 +187,16 @@ export type OrganisationInfo = {
   agent_token?: string;
   admin_api_key?: string;
 };
-
+ 
 export type ApiResult<T> = {
   ok: boolean;
   status: number;
   data: T | null;
   error?: string;
 };
-
+ 
 type AuthKind = "admin" | "agent";
-
+ 
 function requireEnv(name: keyof ImportMetaEnv): string {
   const value = import.meta.env[name];
   if (typeof value !== "string" || value.trim() === "") {
@@ -165,31 +204,31 @@ function requireEnv(name: keyof ImportMetaEnv): string {
   }
   return value.trim();
 }
-
+ 
 const DEFAULT_BASE_URL = requireEnv("VITE_API_URL");
-
+ 
 function normalizeBaseUrl(baseUrl?: string): string {
   const raw = (baseUrl || DEFAULT_BASE_URL).trim();
   return raw.replace(/\/$/, "");
 }
-
+ 
 function jsonHeaders(config: LocalAgentApiConfig, kind: "admin" | "agent") {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "X-Org-Id": config.orgId,
   };
-
+ 
   if (kind === "admin" && config.adminKey) {
     headers["X-Admin-Key"] = config.adminKey;
   }
-
+ 
   if (kind === "agent" && config.agentToken) {
     headers.Authorization = `Bearer ${config.agentToken}`;
   }
-
+ 
   return headers;
 }
-
+ 
 function validateAuth(
   config: LocalAgentApiConfig,
   kind: AuthKind,
@@ -197,18 +236,18 @@ function validateAuth(
   if (!config.orgId?.trim()) {
     return "Organisation ID is required";
   }
-
+ 
   if (kind === "agent" && !config.agentToken?.trim()) {
     return "Agent token is required for device endpoints";
   }
-
+ 
   if (kind === "admin" && !config.adminKey?.trim()) {
     return "Admin key is required for admin endpoints";
   }
-
+ 
   return null;
 }
-
+ 
 async function requestJSON<T>(
   url: string,
   init: RequestInit,
@@ -217,7 +256,7 @@ async function requestJSON<T>(
     const method = (init.method || "GET").toUpperCase();
     const res = await fetch(url, init);
     const text = await res.text();
-
+ 
     let data: T | null = null;
     if (text) {
       try {
@@ -226,7 +265,7 @@ async function requestJSON<T>(
         // Keep response body as plain error text.
       }
     }
-
+ 
     if (!res.ok) {
       return {
         ok: false,
@@ -235,7 +274,7 @@ async function requestJSON<T>(
         error: text || `Request failed with ${res.status}`,
       };
     }
-
+ 
     return { ok: true, status: res.status, data };
   } catch (err) {
     return {
@@ -246,7 +285,7 @@ async function requestJSON<T>(
     };
   }
 }
-
+ 
 export async function registerDevice(
   config: LocalAgentApiConfig,
   payload: RegisterDeviceRequest,
@@ -255,7 +294,7 @@ export async function registerDevice(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   return requestJSON<RegisterDeviceResponse>(
     `${normalizeBaseUrl(config.baseUrl)}/devices/register`,
     {
@@ -265,7 +304,7 @@ export async function registerDevice(
     },
   );
 }
-
+ 
 export async function approveDevice(
   config: LocalAgentApiConfig,
   payload: ApproveDeviceRequest,
@@ -274,7 +313,7 @@ export async function approveDevice(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   return requestJSON<{ device_id: string; approved: boolean }>(
     `${normalizeBaseUrl(config.baseUrl)}/devices/approve`,
     {
@@ -284,7 +323,7 @@ export async function approveDevice(
     },
   );
 }
-
+ 
 export async function listDevices(
   config: LocalAgentApiConfig,
 ): Promise<ApiResult<{ devices: Device[] }>> {
@@ -296,24 +335,24 @@ export async function listDevices(
       error: "Organisation ID is required",
     };
   }
-
+ 
   const base = normalizeBaseUrl(config.baseUrl);
   const headers = { "X-Org-Id": config.orgId };
   const url = `${base}/devices?organisation_id=${encodeURIComponent(config.orgId)}`;
-
+ 
   const primaryResult = await requestJSON<{ devices: Device[] }>(url, {
     method: "GET",
     headers,
   });
-
+ 
   if (primaryResult.ok || !base.includes(":8000")) {
     return primaryResult;
   }
-
+ 
   if (primaryResult.status !== 401 && primaryResult.status !== 405) {
     return primaryResult;
   }
-
+ 
   return requestJSON<{ devices: Device[] }>(
     `${base.replace(":8000", ":8001")}/devices?organisation_id=${encodeURIComponent(config.orgId)}`,
     {
@@ -322,7 +361,7 @@ export async function listDevices(
     },
   );
 }
-
+ 
 export async function listOrganisationDevices(
   config: LocalAgentApiConfig,
   organisationId: string,
@@ -335,10 +374,10 @@ export async function listOrganisationDevices(
       error: "Organisation ID is required",
     };
   }
-
+ 
   const base = normalizeBaseUrl(config.baseUrl);
   const headers = { "X-Org-Id": organisationId };
-
+ 
   return requestJSON<{ organisation: OrganisationInfo; devices: Device[] }>(
     `${base}/organisations/${encodeURIComponent(organisationId)}/devices`,
     {
@@ -347,7 +386,7 @@ export async function listOrganisationDevices(
     },
   );
 }
-
+ 
 export async function listDeviceApprovalRequests(
   config: LocalAgentApiConfig,
   status = "pending",
@@ -356,14 +395,14 @@ export async function listDeviceApprovalRequests(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   const base = normalizeBaseUrl(config.baseUrl);
   const qs = new URLSearchParams({
     organisation_id: config.orgId,
     status,
     limit: "200",
   });
-
+ 
   return requestJSON<{ requests: DeviceApprovalRequestItem[] }>(
     `${base}/devices/approval-requests?${qs.toString()}`,
     {
@@ -372,7 +411,7 @@ export async function listDeviceApprovalRequests(
     },
   );
 }
-
+ 
 // export async function createTask(
 //   config: LocalAgentApiConfig,
 //   payload: CreateTaskRequest,
@@ -381,7 +420,7 @@ export async function listDeviceApprovalRequests(
 //   if (validationError) {
 //     return { ok: false, status: 400, data: null, error: validationError };
 //   }
-
+ 
 //   return requestJSON<CreateTaskResponse>(
 //     `${normalizeBaseUrl(config.baseUrl)}/tasks`,
 //     {
@@ -391,7 +430,7 @@ export async function listDeviceApprovalRequests(
 //     },
 //   );
 // }
-
+ 
 export async function createRemediationTask(
   config: LocalAgentApiConfig,
   payload: CreateTaskRequest,
@@ -400,7 +439,7 @@ export async function createRemediationTask(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   // Routes directly to your unified FastAPI remediation handler
   return requestJSON<{ status: string; task_id: string }>(
     `${normalizeBaseUrl(config.baseUrl)}/tasks/remediations`,
@@ -411,7 +450,54 @@ export async function createRemediationTask(
     },
   );
 }
-
+ 
+export type CreateUnifiedRequestPayload = {
+  type: "access" | "update" | "delete";
+  identifier: string;
+  new_value?: string;
+  device_ids: string[];
+};
+ 
+export type CreateUnifiedRequestResponse = {
+  request_id: string;
+  status: string;
+};
+ 
+// Creates ONE master request fanned out across all selected devices (instead of
+// one master request per device), so they show up together on the Requests page.
+export async function createUnifiedLocalRequest(
+  config: LocalAgentApiConfig,
+  authToken: string,
+  payload: CreateUnifiedRequestPayload,
+): Promise<ApiResult<CreateUnifiedRequestResponse>> {
+  if (!config.orgId?.trim()) {
+    return { ok: false, status: 400, data: null, error: "Organisation ID is required" };
+  }
+  if (!authToken?.trim()) {
+    return { ok: false, status: 400, data: null, error: "User authentication token is required" };
+  }
+ 
+  return requestJSON<CreateUnifiedRequestResponse>(
+    `${normalizeBaseUrl(config.baseUrl)}/requests`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`,
+        "X-Org-Id": config.orgId,
+      },
+      body: JSON.stringify({
+        type: payload.type,
+        identifier: payload.identifier,
+        new_value: payload.new_value,
+        target: "local",
+        device_ids: payload.device_ids,
+        org_id: config.orgId,
+      }),
+    },
+  );
+}
+ 
 export async function getDeviceTasks(
   config: LocalAgentApiConfig,
   deviceId: string,
@@ -420,14 +506,14 @@ export async function getDeviceTasks(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   const url = `${normalizeBaseUrl(config.baseUrl)}/devices/tasks?device_id=${encodeURIComponent(deviceId)}`;
   return requestJSON<{ tasks: DeviceTask[] }>(url, {
     method: "GET",
     headers: jsonHeaders(config, "agent"),
   });
 }
-
+ 
 export async function submitResult(
   config: LocalAgentApiConfig,
   payload: SubmitResultRequest,
@@ -436,7 +522,7 @@ export async function submitResult(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   return requestJSON<{ message: string; task_id: string }>(
     `${normalizeBaseUrl(config.baseUrl)}/results`,
     {
@@ -446,7 +532,7 @@ export async function submitResult(
     },
   );
 }
-
+ 
 export async function getTaskGroupResults(
   config: LocalAgentApiConfig,
   taskGroupId: string,
@@ -455,14 +541,14 @@ export async function getTaskGroupResults(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   const url = `${normalizeBaseUrl(config.baseUrl)}/tasks/${encodeURIComponent(taskGroupId)}/results`;
   return requestJSON<TaskGroupResultResponse>(url, {
     method: "GET",
     headers: jsonHeaders(config, "admin"),
   });
 }
-
+ 
 export async function listTasks(
   config: LocalAgentApiConfig,
   params?: { deviceId?: string; status?: string; limit?: number },
@@ -471,21 +557,21 @@ export async function listTasks(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   const query = new URLSearchParams();
   if (params?.deviceId) query.set("device_id", params.deviceId);
   if (params?.status) query.set("status", params.status);
   if (params?.limit) query.set("limit", String(params.limit));
-
+ 
   const qs = query.toString();
   const url = `${normalizeBaseUrl(config.baseUrl)}/tasks${qs ? `?${qs}` : ""}`;
-
+ 
   return requestJSON<{ tasks: TaskHistoryItem[] }>(url, {
     method: "GET",
     headers: jsonHeaders(config, "admin"),
   });
 }
-
+ 
 export async function listDeviceDailyScanReports(
   config: LocalAgentApiConfig,
   date?: string,
@@ -494,13 +580,13 @@ export async function listDeviceDailyScanReports(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   const query = new URLSearchParams();
   if (date?.trim()) query.set("date", date.trim());
-
+ 
   const qs = query.toString();
   const url = `${normalizeBaseUrl(config.baseUrl)}/devices/scan-reports/daily${qs ? `?${qs}` : ""}`;
-
+ 
   return requestJSON<{ date: string; reports: DeviceDailyScanReportItem[] }>(
     url,
     {
@@ -509,7 +595,47 @@ export async function listDeviceDailyScanReports(
     },
   );
 }
-
+ 
+export async function listCronRuns(
+  config: LocalAgentApiConfig,
+  params?: { deviceId?: string; limit?: number },
+): Promise<ApiResult<{ runs: CronRunItem[] }>> {
+  const validationError = validateAuth(config, "admin");
+  if (validationError) {
+    return { ok: false, status: 400, data: null, error: validationError };
+  }
+ 
+  const query = new URLSearchParams();
+  if (params?.deviceId?.trim()) query.set("device_id", params.deviceId.trim());
+  if (params?.limit) query.set("limit", String(params.limit));
+ 
+  const qs = query.toString();
+  const url = `${normalizeBaseUrl(config.baseUrl)}/devices/cron-runs${qs ? `?${qs}` : ""}`;
+ 
+  return requestJSON<{ runs: CronRunItem[] }>(url, {
+    method: "GET",
+    headers: jsonHeaders(config, "admin"),
+  });
+}
+ 
+export async function getCronRunVulnerabilities(
+  config: LocalAgentApiConfig,
+  runId: string,
+): Promise<ApiResult<CronRunVulnerabilitiesResponse>> {
+  const validationError = validateAuth(config, "admin");
+  if (validationError) {
+    return { ok: false, status: 400, data: null, error: validationError };
+  }
+ 
+  return requestJSON<CronRunVulnerabilitiesResponse>(
+    `${normalizeBaseUrl(config.baseUrl)}/vulnerabilities/cron-runs/${encodeURIComponent(runId)}`,
+    {
+      method: "GET",
+      headers: jsonHeaders(config, "admin"),
+    },
+  );
+}
+ 
 export async function getMyOrganisations(
   config: LocalAgentApiConfig,
   token: string,
@@ -518,7 +644,7 @@ export async function getMyOrganisations(
   if (!trimmedToken) {
     return { ok: false, status: 401, data: null, error: "Missing auth token" };
   }
-
+ 
   const url = `${normalizeBaseUrl(config.baseUrl)}/auth/organisations/mine`;
   return requestJSON<{ organisations: OrganisationInfo[] }>(url, {
     method: "GET",
@@ -528,7 +654,7 @@ export async function getMyOrganisations(
     },
   });
 }
-
+ 
 export interface VulnerabilityItem {
   title: string;
   data_type: string;
@@ -538,7 +664,7 @@ export interface VulnerabilityItem {
   path_or_port: string;
   status: string;
 }
-
+ 
 export interface DeviceVulnerabilitiesResponse {
   device_id: string;
   cron_run_id?: string;
@@ -550,7 +676,7 @@ export interface DeviceVulnerabilitiesResponse {
   vulnerabilities: VulnerabilityItem[];
   updated_at?: string;
 }
-
+ 
 export async function getDeviceVulnerabilities(
   config: LocalAgentApiConfig,
   deviceId: string,
@@ -559,7 +685,7 @@ export async function getDeviceVulnerabilities(
   if (validationError) {
     return { ok: false, status: 400, data: null, error: validationError };
   }
-
+ 
   return requestJSON<DeviceVulnerabilitiesResponse>(
     `${normalizeBaseUrl(config.baseUrl)}/vulnerabilities/${encodeURIComponent(deviceId)}`,
     {

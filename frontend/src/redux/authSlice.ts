@@ -41,6 +41,7 @@ type AuthState = {
   token: string | null;
   user: User | null;
   organisations: OrganisationCredential[];
+  currentOrgId: string | null;  // Current selected organization
   loading: boolean;
   error: string | null;
   mode: "guest" | "user" | null;
@@ -62,10 +63,17 @@ function readStoredOrganisations(): OrganisationCredential[] {
   }
 }
 
+const storedOrganisations = readStoredOrganisations();
+const storedCurrentOrgId = localStorage.getItem("auth_current_org_id");
+const initialOrgId = storedOrganisations.some((org) => org.id === storedCurrentOrgId)
+  ? storedCurrentOrgId
+  : storedOrganisations[0]?.id || null;
+
 const initialState: AuthState = {
   token: localStorage.getItem("auth_token"),
   user: null,
-  organisations: readStoredOrganisations(),
+  organisations: storedOrganisations,
+  currentOrgId: initialOrgId,
   loading: false,
   error: null,
   mode: (localStorage.getItem("auth_mode") as "guest" | "user" | null) || null,
@@ -206,10 +214,27 @@ const authSlice = createSlice({
     },
     setOrganisations(state, action: { payload: OrganisationCredential[] }) {
       state.organisations = action.payload;
+      const selected = action.payload.some((org) => org.id === state.currentOrgId)
+        ? state.currentOrgId
+        : action.payload[0]?.id || null;
+      state.currentOrgId = selected;
       localStorage.setItem(
         "auth_organisations",
         JSON.stringify(action.payload),
       );
+      if (selected) {
+        localStorage.setItem("auth_current_org_id", selected);
+      } else {
+        localStorage.removeItem("auth_current_org_id");
+      }
+    },
+    setCurrentOrg(state, action: { payload: string | null }) {
+      state.currentOrgId = action.payload;
+      if (action.payload) {
+        localStorage.setItem("auth_current_org_id", action.payload);
+      } else {
+        localStorage.removeItem("auth_current_org_id");
+      }
     },
   },
   extraReducers: (builder) => {
@@ -223,6 +248,10 @@ const authSlice = createSlice({
         state.token = action.payload.token;
         state.user = action.payload.user;
         state.organisations = action.payload.organisations || [];
+        const selected = state.organisations.some((org) => org.id === state.currentOrgId)
+          ? state.currentOrgId
+          : state.organisations[0]?.id || null;
+        state.currentOrgId = selected;
         state.mode = "user";
         localStorage.setItem("auth_token", action.payload.token);
         localStorage.setItem("auth_mode", "user");
@@ -230,6 +259,11 @@ const authSlice = createSlice({
           "auth_organisations",
           JSON.stringify(action.payload.organisations || []),
         );
+        if (selected) {
+          localStorage.setItem("auth_current_org_id", selected);
+        } else {
+          localStorage.removeItem("auth_current_org_id");
+        }
       })
       .addCase(loginUser.rejected, (state, action) => {
         state.loading = false;
@@ -270,6 +304,6 @@ const authSlice = createSlice({
   },
 });
 
-export const { setSession, clearSession, signInAsGuest, setOrganisations } =
+export const { setSession, clearSession, signInAsGuest, setOrganisations, setCurrentOrg } =
   authSlice.actions;
 export default authSlice.reducer;

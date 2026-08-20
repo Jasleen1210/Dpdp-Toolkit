@@ -3,6 +3,11 @@ uvicorn
 pydantic
 spacy
 PyPDF2
+pdfplumber
+python-docx
+openpyxl
+xlrd
+python-pptx
 python-multipart
 pymongo
 python-dotenv

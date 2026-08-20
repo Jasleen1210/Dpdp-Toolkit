@@ -23,9 +23,10 @@ COPY agent-go agent-go
 # does not pay for dependency fetching and works even if builds are disabled.
 RUN cd agent-go \
     && go mod download \
-    && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dpdp-agent-windows-amd64.exe ./cmd/agent \
-    && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dpdp-agent-darwin-amd64 ./cmd/agent \
-    && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dpdp-agent-darwin-arm64 ./cmd/agent \
+    && mkdir -p dist/windows-amd64 dist/darwin-amd64 dist/darwin-arm64 \
+    && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/windows-amd64/dpdp-agent.exe ./cmd/agent \
+    && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o dist/darwin-amd64/dpdp-agent ./cmd/agent \
+    && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o dist/darwin-arm64/dpdp-agent ./cmd/agent \
     && chmod -R a+rwX "$GOMODCACHE"
  
 COPY backend backend
