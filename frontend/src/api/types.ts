@@ -31,7 +31,7 @@ export interface DSRRequest {
   id: string;
   type: "delete" | "access" | "update";
   subject: string;
-  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval" | "error";
+  status: "pending" | "in_progress" | "completed" | "rejected" | "awaiting_approval" | "error" | "cancelled";
   created: string;
   created_at?: string;
   handler: "auto" | "manual" | string;

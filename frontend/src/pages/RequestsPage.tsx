@@ -36,9 +36,10 @@ const API = ((import.meta.env.VITE_API_URL as string | undefined) || "http://127
 
 const statusColors: Record<string, string> = {
   pending: "bg-warning/15 text-warning border-warning/30",
-  in_progress: "bg-primary/15 text-primary border-primary/30",
+  in_progress: "bg-warning/15 text-warning border-warning/30",
   completed: "bg-emerald-500/15 text-emerald-500 border-emerald-500/30",
   rejected: "bg-destructive/15 text-destructive border-destructive/30",
+  cancelled: "bg-muted text-muted-foreground border-border",
   awaiting_approval: "bg-warning/15 text-warning border-warning/30",
   error: "bg-destructive/15 text-destructive border-destructive/30",
 };
@@ -165,6 +166,8 @@ function RequestCard({
   onToggle,
   onApprove,
   approving,
+  onCancel,
+  cancelling,
   authHeaders,
 }: {
   request: DSRRequest;
@@ -172,14 +175,36 @@ function RequestCard({
   onToggle: () => void;
   onApprove: (id: string) => void;
   approving: boolean;
+  onCancel: (id: string) => void;
+  cancelling: boolean;
   authHeaders: Record<string, string>;
 }) {
   const isAwaitingApproval = Boolean(request.requires_approval) && request.status === "awaiting_approval";
-  const wasApproved = Boolean(request.requires_approval) && !isAwaitingApproval && request.status !== "rejected";
+  const wasApproved = Boolean(request.requires_approval) && !isAwaitingApproval && request.status !== "rejected" && request.status !== "cancelled";
+  // Guard: only allow cancel while pending or awaiting_approval — not once in_progress
+  const isCancellable = ["pending", "awaiting_approval"].includes(request.status);
   const targetTag = getTargetBadge(request);
   const [detail, setDetail] = useState<RequestDetailData | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+  const [cancellingTaskId, setCancellingTaskId] = useState<string | null>(null);
+
+  const handleCancelTask = async (taskId: string) => {
+    setCancellingTaskId(taskId);
+    try {
+      await fetch(`${API}/requests/${request.id}/tasks/${taskId}/cancel`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+      });
+      // Refresh detail inline
+      const res = await fetch(`${API}/requests/${request.id}`, { headers: authHeaders });
+      if (res.ok) setDetail(await res.json());
+    } catch (e) {
+      console.error("Cancel task failed:", e);
+    } finally {
+      setCancellingTaskId(null);
+    }
+  };
 
   useEffect(() => {
     if (!expanded) return;
@@ -285,6 +310,7 @@ function RequestCard({
               <div className="space-y-2">
                 {detail.local_tasks.map((t) => {
                   const taskId = t.task_id || t.id || "";
+                  const isCancellableTask = ["pending", "awaiting_approval", "in_progress"].includes(t.status);
                   return (
                     <div key={taskId} className="space-y-1.5">
                       <TaskCard
@@ -294,6 +320,23 @@ function RequestCard({
                           setExpandedTaskIds((prev) => ({ ...prev, [taskId]: !prev[taskId] }))
                         }
                       />
+                      {isCancellableTask && taskId && (
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={cancellingTaskId === taskId}
+                            onClick={() => void handleCancelTask(taskId)}
+                            className="h-7 text-[11px] border-destructive/30 text-destructive hover:bg-destructive/10"
+                          >
+                            {cancellingTaskId === taskId ? (
+                              <><RefreshCw className="h-3 w-3 mr-1 animate-spin" /> Cancelling</>
+                            ) : (
+                              <><X className="h-3 w-3 mr-1" /> Cancel task on {t.device_id || "device"}</>
+                            )}
+                          </Button>
+                        </div>
+                      )}
 
                       {t.delete_replacements && t.delete_replacements.length > 0 && (
                         <div className="space-y-1 bg-muted/40 p-2 rounded-sm font-mono text-[10px]">
@@ -393,30 +436,46 @@ function RequestCard({
             <span className="text-muted-foreground">
               Handler: <span className="text-foreground capitalize">{request.handler}</span>
             </span>
-            {isAwaitingApproval && (
-              <Button
-                size="sm"
-                disabled={approving}
-                onClick={() => onApprove(request.id)}
-                className="h-8 text-[12px]"
-              >
-                {approving ? (
-                  <>
-                    <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Approving
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" /> Approve Request
-                  </>
-                )}
-              </Button>
-            )}
-            {wasApproved && (
-              <span className="inline-flex items-center gap-1.5 rounded-sm border border-success/30 bg-emerald-500/10 px-2.5 py-1.5 text-[12px] text-emerald-600">
-                <CheckCircle2 className="h-3.5 w-3.5" /> Approved
-              </span>
-            )}
-          </div>
+            <div className="flex items-center gap-2">
+              {isAwaitingApproval && (
+                <Button
+                  size="sm"
+                  disabled={approving}
+                  onClick={() => onApprove(request.id)}
+                  className="h-8 text-[12px]"
+                >
+                  {approving ? (
+                    <>
+                      <RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Approving
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" /> Approve Request
+                    </>
+                  )}
+                </Button>
+              )}
+              {wasApproved && (
+                <span className="inline-flex items-center gap-1.5 rounded-sm border border-success/30 bg-emerald-500/10 px-2.5 py-1.5 text-[12px] text-emerald-600">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> Approved
+                </span>
+              )}
+              {isCancellable && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={cancelling || approving}
+                  onClick={() => onCancel(request.id)}
+                  className="h-8 text-[12px] border-destructive/40 text-destructive hover:bg-destructive/10"
+                >
+                  {cancelling ? (
+                    <><RefreshCw className="h-3.5 w-3.5 mr-1.5 animate-spin" /> Cancelling</>
+                  ) : (
+                    <><X className="h-3.5 w-3.5 mr-1.5" /> Cancel</>
+                  )}
+                </Button>
+              )}
+            </div>          </div>
         </div>
       )}
     </div>
@@ -460,6 +519,7 @@ export default function RequestsPage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   // Search, Filters & Sorting state
   const [searchQuery, setSearchQuery] = useState("");
@@ -509,6 +569,23 @@ export default function RequestsPage() {
     const interval = window.setInterval(() => void loadData(false), 5000);
     return () => window.clearInterval(interval);
   }, [authToken, currentOrgId]);
+
+  const handleCancel = async (id: string) => {
+    setCancellingId(id);
+    const headers: Record<string, string> = { ...authHeaders, "Content-Type": "application/json" };
+    try {
+      const res = await fetch(`${API}/requests/${id}/cancel`, { method: "POST", headers });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.warn("Cancel failed:", err.detail || "unknown error");
+      }
+    } catch (e) {
+      console.error("Cancel request failed:", e);
+    } finally {
+      setCancellingId(null);
+      await loadData(true);
+    }
+  };
 
   const handleApprove = async (id: string) => {
     setApprovingId(id);
@@ -834,6 +911,7 @@ export default function RequestsPage() {
               <option value="in_progress">In Progress</option>
               <option value="completed">Completed</option>
               <option value="rejected">Rejected</option>
+              <option value="cancelled">Cancelled</option>
               <option value="error">Error</option>
             </select>
           </div>
@@ -915,6 +993,8 @@ export default function RequestsPage() {
               }
               onApprove={handleApprove}
               approving={approvingId === request.id}
+              onCancel={handleCancel}
+              cancelling={cancellingId === request.id}
               authHeaders={authHeaders}
             />
           ))

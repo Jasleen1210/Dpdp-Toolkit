@@ -168,8 +168,10 @@ class RequestStateManager:
         """
         normalized = (req_status or "pending").lower()
         
-        if normalized in {"rejected", "cancelled"}:
+        if normalized == "rejected":
             return "rejected"
+        if normalized == "cancelled":
+            return "cancelled"
         if normalized in {"error", "failed"}:
             return "error"
         
@@ -183,7 +185,11 @@ class RequestStateManager:
         # Check local tasks
         if local_tasks:
             task_statuses = [t.get("status", "pending").lower() for t in local_tasks]
-            if all(s == "completed" for s in task_statuses):
+            _terminal = {"completed", "cancelled", "skipped"}
+            if all(s in _terminal for s in task_statuses):
+                # Only cancelled if NONE completed — if even one completed, treat as completed
+                if not any(s == "completed" for s in task_statuses):
+                    return "cancelled"
                 local_done = True
             elif any(s in {"pending", "in_progress"} for s in task_statuses):
                 return "in_progress"

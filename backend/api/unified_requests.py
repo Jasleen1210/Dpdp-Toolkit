@@ -47,8 +47,15 @@ def normalize_request_status(
     normalized = (status or "pending").lower()
     task_list = tasks or []
 
-    if normalized in {"rejected", "cancelled"}:
+    if normalized in {"rejected"}:
         return "rejected"
+    if normalized == "cancelled":
+        # Only surface as cancelled if no task actually completed.
+        # If any task finished, show completed even if others were cancelled.
+        any_completed = any(
+            (t or {}).get("status", "").lower() == "completed" for t in task_list
+        )
+        return "completed" if any_completed else "cancelled"
     if normalized in {"error", "failed"}:
         return "error"
     if normalized == "awaiting_approval" and not approved:
@@ -61,7 +68,9 @@ def normalize_request_status(
         return "completed"
 
     if task_list:
-        if all((t or {}).get("status", "pending").lower() == "completed" for t in task_list):
+        if all((t or {}).get("status", "pending").lower() in {"completed", "cancelled", "skipped"} for t in task_list):
+            if any((t or {}).get("status", "pending").lower() == "cancelled" for t in task_list):
+                return "cancelled"
             return "completed"
         if any((t or {}).get("status", "pending").lower() in {"pending", "in_progress", "awaiting_approval"} for t in task_list):
             return "in_progress"
@@ -273,12 +282,21 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
     """Asynchronously executes cloud storage and database processing in the background."""
     request_id = master_doc["id"]
     try:
+        # Bail out early if the request was cancelled before background processing started
+        current = data_subject_requests.find_one({"id": request_id}, {"status": 1}) or {}
+        if (current.get("status") or "").lower() == "cancelled":
+            return
+
         now = utc_now()
         if not master_doc.get("requires_approval"):
+            # Only advance to in_progress if not already cancelled
             data_subject_requests.update_one(
-                {"id": request_id},
+                {"id": request_id, "status": {"$nin": ["cancelled", "rejected"]}},
                 {"$set": {"status": "in_progress", "updated_at": now}},
             )
+            fresh = (data_subject_requests.find_one({"id": request_id}, {"status": 1}) or {})
+            if (fresh.get("status") or "").lower() == "cancelled":
+                return
 
         cloud_res = None
         source_status = {}
@@ -319,6 +337,17 @@ def _run_async_processing(master_doc: dict, org_id: str, target_sources: list):
                 source_status["local"] = "queued" if any(t.get("status") in {"pending", "in_progress"} for t in local_tasks) else "completed"
         update_fields["source_status"] = source_status
         update_fields["status_message"] = RequestStateManager.build_status_message(source_status)
+
+        # Re-check: if the request was cancelled while we were processing, do not
+        # overwrite the cancelled status — only persist cloud/db result payloads.
+        current_status = (
+            (data_subject_requests.find_one({"id": request_id}, {"status": 1}) or {}).get("status") or ""
+        ).lower()
+        if current_status == "cancelled":
+            safe_fields = {k: v for k, v in update_fields.items() if k not in ("status", "source_status", "status_message")}
+            if safe_fields:
+                data_subject_requests.update_one({"id": request_id}, {"$set": safe_fields})
+            return
 
         if master_doc.get("requires_approval"):
             update_fields["status"] = "awaiting_approval"
@@ -508,7 +537,7 @@ async def list_unified_requests(
 
     def _format_request_row(r: dict, tasks: list) -> dict:
         device_ids = [t.get("device_id") for t in tasks if t.get("device_id")]
-        completed_tasks = sum(1 for t in tasks if t.get("status") == "completed")
+        completed_tasks = sum(1 for t in tasks if t.get("status") in {"completed", "cancelled", "skipped"})
 
         subject = (
             r.get("identifier")
@@ -523,7 +552,8 @@ async def list_unified_requests(
 
         status = normalize_request_status(
             r.get("status", "pending"),
-            tasks,
+            # Don't let individual task states override a terminal master status
+            tasks if (r.get("status") or "").lower() not in {"cancelled", "rejected", "completed", "error"} else [],
             bool(r.get("requires_approval")),
             approved=bool(r.get("approved_at")),
         )
@@ -566,6 +596,18 @@ async def list_unified_requests(
         if "db" in resolved_targets or "database" in source_types:
             sources_summary.append("Database")
 
+        # Recompute source_status["local"] live from task states so cancelled/skipped
+        # tasks don't keep the request stuck as "queued" / "in_progress"
+        stored_source_status = dict(r.get("source_status") or {})
+        if tasks and "local" in stored_source_status:
+            _terminal = {"completed", "cancelled", "skipped"}
+            task_statuses = [t.get("status", "pending").lower() for t in tasks]
+            if all(s in _terminal for s in task_statuses):
+                stored_source_status["local"] = "completed"
+            elif any(s in {"pending", "in_progress"} for s in task_statuses):
+                stored_source_status["local"] = "queued"
+        live_status_message = RequestStateManager.build_status_message(stored_source_status) if stored_source_status else None
+
         return {
             "id": r.get("id"),
             "type": display_type,
@@ -579,8 +621,8 @@ async def list_unified_requests(
             "target_sources": resolved_targets,
             "source_types": source_types,
             "requires_approval": bool(r.get("requires_approval")),
-            "source_status": r.get("source_status", {}),
-            "status_message": r.get("status_message") or RequestStateManager.build_status_message({"request": status}),
+            "source_status": stored_source_status,
+            "status_message": live_status_message or r.get("status_message") or RequestStateManager.build_status_message({"request": status}),
             "cloud_error": r.get("cloud_error"),
             "org_id": r.get("org_id") or r.get("organisation_id"),
         }
@@ -787,4 +829,179 @@ async def approve_unified_request(
         ),
         "request_id": request_id,
         "cloud_result": cloud_result,
+    }
+
+
+@router.post("/{request_id}/cancel")
+async def cancel_unified_request(
+    request_id: str,
+    ctx: OrgAuthContext = Depends(resolve_org_context),
+):
+    """
+    Cancels a DSR request that is pending, in progress, or awaiting approval.
+    Marks the master request and all un-executed tasks as cancelled so the
+    agent never picks them up, and cloud/DB background processing is skipped.
+    """
+    org_id = ctx.org_id
+
+    req = data_subject_requests.find_one(
+        RequestStateManager.build_request_list_query(org_id, {"id": request_id}),
+        {"_id": 0},
+    )
+
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    current_status = (req.get("status") or "").lower()
+
+    # Guard: already terminal
+    if current_status in {"completed", "cancelled", "rejected"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Request is already in a terminal state and cannot be cancelled.",
+        )
+
+    # Guard: in_progress requests cannot be cancelled — work is already executing
+    if current_status == "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail="Request is already in progress and cannot be cancelled. "
+                   "Wait for it to complete or cancel individual pending tasks instead.",
+        )
+
+    now = utc_now()
+
+    # Cancel all pending / awaiting / in-progress tasks so the agent ignores them
+    request_tasks.update_many(
+        {
+            "request_id": request_id,
+            "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+            "status": {"$in": ["pending", "awaiting_approval", "in_progress"]},
+        },
+        {"$set": {"status": "cancelled", "updated_at": now, "completed_at": now}},
+    )
+
+    # Re-evaluate overall request status considering ALL sources (local tasks + cloud + db).
+    # Rule: show "completed" if ANY source completed real work; only "cancelled" if ALL cancelled.
+    all_tasks = list(
+        request_tasks.find(
+            {"request_id": request_id, "$or": [{"org_id": org_id}, {"organisation_id": org_id}]},
+            {"status": 1},
+        )
+    )
+    terminal = {"completed", "cancelled", "skipped", "failed", "error"}
+    all_local_terminal = all((t.get("status") or "cancelled") in terminal for t in all_tasks)
+    any_local_completed = any((t.get("status") or "") == "completed" for t in all_tasks)
+
+    # Also check cloud and db via source_status on the master doc
+    source_status = req.get("source_status", {})
+    any_source_completed = any_local_completed or any(
+        v == "completed" for v in source_status.values()
+    )
+
+    if any_source_completed:
+        final_status = "completed"
+        status_message = "Request completed. Some queued tasks were cancelled by the user."
+        closed_at_field = {"closed_at": now}
+    else:
+        final_status = "cancelled"
+        status_message = "Request was cancelled by the user."
+        closed_at_field = {"closed_at": now}
+
+    data_subject_requests.update_one(
+        RequestStateManager.build_request_list_query(org_id, {"id": request_id}),
+        {
+            "$set": {
+                "status": final_status,
+                "status_message": status_message,
+                "updated_at": now,
+                **closed_at_field,
+            }
+        },
+    )
+
+    audit_logs.insert_one({
+        "actor_type": "user",
+        "actor_id": ctx.user_id,
+        "entity_type": "data_subject_request",
+        "org_id": org_id,
+        "action": "CANCEL_REQUEST",
+        "request_id": request_id,
+        "timestamp": now,
+        "status": "SUCCESS",
+    })
+
+    return {"status": "success", "message": status_message, "request_id": request_id, "final_status": final_status}
+
+
+@router.post("/{request_id}/tasks/{task_id}/cancel")
+async def cancel_request_task(
+    request_id: str,
+    task_id: str,
+    ctx: OrgAuthContext = Depends(resolve_org_context),
+):
+    """
+    Cancels a single pending or awaiting-approval task within a request.
+    The parent request and any completed/in-progress tasks are unaffected,
+    so the overall request can still finish successfully.
+    """
+    org_id = ctx.org_id
+
+    # Verify the parent request belongs to this org
+    req = data_subject_requests.find_one(
+        RequestStateManager.build_request_list_query(org_id, {"id": request_id}),
+        {"_id": 0, "status": 1},
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    # Fetch the task
+    task = request_tasks.find_one(
+        {
+            "id": task_id,
+            "request_id": request_id,
+            "$or": [{"org_id": org_id}, {"organisation_id": org_id}],
+        },
+        {"_id": 0, "status": 1, "device_id": 1},
+    )
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if task.get("status") not in {"pending", "awaiting_approval", "in_progress"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task is already '{task.get('status')}' and cannot be cancelled.",
+        )
+
+    now = utc_now()
+    request_tasks.update_one(
+        {"id": task_id},
+        {
+            "$set": {
+                "status": "cancelled",
+                "status_reason": "Cancelled by user.",
+                "updated_at": now,
+                "completed_at": now,
+            }
+        },
+    )
+
+    audit_logs.insert_one({
+        "actor_type": "user",
+        "actor_id": ctx.user_id,
+        "entity_type": "request_task",
+        "org_id": org_id,
+        "action": "CANCEL_TASK",
+        "request_id": request_id,
+        "task_id": task_id,
+        "device_id": task.get("device_id"),
+        "timestamp": now,
+        "status": "SUCCESS",
+    })
+
+    return {
+        "status": "success",
+        "message": f"Task {task_id} cancelled.",
+        "task_id": task_id,
+        "request_id": request_id,
     }
