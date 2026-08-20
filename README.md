@@ -1,6 +1,6 @@
 # SPARK - Data Protection & PII Detection Toolkit
 
-**SPARK** is a comprehensive data protection platform that detects, manages, and remediates personally identifiable information (PII) across local files, databases, and cloud storage. It enables organizations to maintain compliance, protect privacy, and automatically handle sensitive data discovery.
+**SPARK** (Sensitive Data Protection and Audit Risk Kit) is a comprehensive data protection platform that detects, manages, and remediates personally identifiable information (PII) across local files, databases, and cloud storage. It enables organizations to maintain compliance, protect privacy, and automatically handle sensitive data discovery.
 
 ---
 
