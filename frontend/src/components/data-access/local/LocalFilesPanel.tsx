@@ -135,13 +135,17 @@ export default function LocalFilesPanel() {
     agentToken: agentToken.trim(),
   }), [normalizedBaseUrl, orgId, adminKey, agentToken]);
 
-  const deviceById = useMemo(
-    () => new Map(devices.map((device) => [device.device_id, device])),
+  const localDevices = useMemo(
+    () => devices.filter((device) => device.source_type === "local_device"),
     [devices],
   );
+  const deviceById = useMemo(
+    () => new Map(localDevices.map((device) => [device.device_id, device])),
+    [localDevices],
+  );
   const scannedTodayCount = useMemo(
-    () => devices.filter((device) => dailyReportByDevice[device.device_id]?.scanned_today).length,
-    [devices, dailyReportByDevice],
+    () => localDevices.filter((device) => dailyReportByDevice[device.device_id]?.scanned_today).length,
+    [localDevices, dailyReportByDevice],
   );
   const completedCronRuns = useMemo(
     () => cronRuns.filter((run) => normalizeStatus(run.status) === "completed").length,
@@ -304,9 +308,9 @@ export default function LocalFilesPanel() {
   }, [activeTab, baseUrl, orgId, cronFilterDeviceId, refreshCronRuns]);
 
   useEffect(() => {
-    if (devices.some((device) => device.device_id === cronFilterDeviceId)) return;
+    if (localDevices.some((device) => device.device_id === cronFilterDeviceId)) return;
     if (cronFilterDeviceId) setCronFilterDeviceId("");
-  }, [devices, cronFilterDeviceId]);
+  }, [localDevices, cronFilterDeviceId]);
 
   const handleApproveDevice = async (deviceId: string) => {
     clearMessages();
@@ -425,7 +429,7 @@ export default function LocalFilesPanel() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-[12px]">
           {[
-            { label: "Registered Devices", value: devices.length },
+            { label: "Registered Devices", value: localDevices.length },
             { label: "Devices Scanned Today", value: scannedTodayCount },
             { label: "Completed Cron Runs", value: completedCronRuns },
             { label: "Failed Cron Runs", value: failedCronRuns },
@@ -459,13 +463,13 @@ export default function LocalFilesPanel() {
             <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
               Loading registered devices...
             </div>
-          ) : devices.length === 0 ? (
+          ) : localDevices.length === 0 ? (
             <div className="rounded-sm border border-border bg-muted/30 p-3 text-[12px] text-muted-foreground">
               No registered devices available.
             </div>
           ) : (
             <div className="space-y-2 max-h-64 overflow-auto pr-1">
-              {devices.map((device) => (
+              {localDevices.map((device) => (
                 <DeviceCard
                   key={device.device_id}
                   device={device}
@@ -492,7 +496,7 @@ export default function LocalFilesPanel() {
                 onChange={(event) => setCronFilterDeviceId(event.target.value)}
               >
                 <option value="">All registered devices</option>
-                {devices.filter((device) => device.device_id).map((device) => (
+                {localDevices.filter((device) => device.device_id).map((device) => (
                   <option key={device.device_id} value={device.device_id}>
                     {device.device_id}{device.approved ? "" : " (pending)"}
                   </option>

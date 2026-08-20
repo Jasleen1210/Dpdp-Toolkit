@@ -18,6 +18,7 @@ export type Device = {
   approved_by?: string | null;
   approved_by_email?: string | null;
   approved_at?: string | null;
+  source_type?: "local_device" | "cloud_storage" | "db_storage";
 };
  
 export type DeviceTask = {
