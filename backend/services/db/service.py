@@ -403,13 +403,17 @@ def delete_update_database_source(
     config = dict(source["config"])
     config["organisation_id"] = organisation_id
 
+    # Preserve the original action for audit logging before any internal mapping.
+    original_action = action
+
     try:
+        # manage_database_data will map REDACT and MASK to UPDATE with sentinel values.
         result = manage_database_data(config, identifier, action, new_value)
         _write_audit(
             organisation_id=organisation_id,
             source_id=source_id,
             user_id=user_id,
-            action=f"DATABASE_{action}_COMPLETED",
+            action=f"DATABASE_{original_action}_COMPLETED",
             status="SUCCESS",
             details={
                 "identifier": identifier,
@@ -424,7 +428,7 @@ def delete_update_database_source(
             organisation_id=organisation_id,
             source_id=source_id,
             user_id=user_id,
-            action=f"DATABASE_{action}_COMPLETED",
+            action=f"DATABASE_{original_action}_COMPLETED",
             status="FAILED",
             details={"message": str(exc)},
         )
@@ -434,7 +438,7 @@ def delete_update_database_source(
             organisation_id=organisation_id,
             source_id=source_id,
             user_id=user_id,
-            action=f"DATABASE_{action}_COMPLETED",
+            action=f"DATABASE_{original_action}_COMPLETED",
             status="FAILED",
             details={"message": str(exc)},
         )

@@ -204,10 +204,10 @@ export async function deleteUpdateDatabaseSource(
   organisationId: string,
   sourceId: string,
   identifier: string,
-  action: "UPDATE" | "DELETE",
+  action: "UPDATE" | "DELETE" | "REDACT" | "MASK",
   newValue: string | null,
 ): Promise<{
-  action: "UPDATE" | "DELETE";
+  action: "UPDATE" | "DELETE" | "REDACT" | "MASK";
   identifier: string;
   status: string;
   message: string;

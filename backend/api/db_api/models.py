@@ -23,7 +23,7 @@ class DatabaseSourceCreate(BaseModel):
 
 
 class DatabaseDataManageRequest(BaseModel):
-    """Payload to redact or delete data by identifier in a database."""
+    """Payload to redact, mask, or delete data by identifier in a database."""
     identifier: str = Field(min_length=1)
-    action: Literal["UPDATE", "DELETE"]
+    action: Literal["UPDATE", "DELETE", "REDACT", "MASK"]
     new_value: Optional[str] = Field(default=None)

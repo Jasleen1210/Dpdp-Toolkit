@@ -54,10 +54,8 @@ export default function DatabaseScannerPanel() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
-  const [scanAuth, setScanAuth] = useState(false);
-
   const [remediateIdentifier, setRemediateIdentifier] = useState("");
-  const [remediateAction, setRemediateAction] = useState<"UPDATE" | "DELETE">("UPDATE");
+  const [remediateAction, setRemediateAction] = useState<"UPDATE" | "REDACT" | "MASK">("UPDATE");
   const [remediateReplacement, setRemediateReplacement] = useState("");
   const [remediateResult, setRemediateResult] = useState<{
     impacted_locations: number;
@@ -326,7 +324,7 @@ export default function DatabaseScannerPanel() {
         selectedSourceId,
         remediateIdentifier,
         remediateAction,
-        remediateAction === "UPDATE" ? (remediateReplacement || "[REDACTED]") : null,
+        remediateAction === "UPDATE" ? (remediateReplacement || null) : null,
       );
 
       setRemediateResult({
@@ -335,9 +333,15 @@ export default function DatabaseScannerPanel() {
       });
 
       setMessage(
-        `Changes made successfully. ${remediateAction === "UPDATE" ? "Redacted" : "Deleted"
-        } target PII value across ${response.impacted_locations} table(s), affecting ${response.impacted_rows
-        } row(s).`,
+        `Changes made successfully. ${
+          remediateAction === "UPDATE"
+            ? remediateReplacement
+              ? "Updated"
+              : "Redacted"
+            : remediateAction === "REDACT"
+            ? "Redacted"
+            : "Masked"
+        } target PII value across ${response.impacted_locations} table(s), affecting ${response.impacted_rows} row(s).`
       );
 
       // Trigger findings and sources reload
@@ -486,16 +490,6 @@ export default function DatabaseScannerPanel() {
 
             {selectedSource ? (
               <div className="flex items-center gap-4">
-                <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={scanAuth}
-                    onChange={(e) => setScanAuth(e.target.checked)}
-                    className="rounded border-border bg-background"
-                  />
-                  Scan auth schemas
-                </label>
-
                 <Button
                   onClick={() => void scanSelectedSource()}
                   disabled={busy !== ""}
@@ -702,13 +696,13 @@ export default function DatabaseScannerPanel() {
                 value={remediateAction}
                 onChange={(e) =>
                   setRemediateAction(
-                    e.target.value as "UPDATE" | "DELETE",
+                    e.target.value as "UPDATE" | "REDACT" | "MASK",
                   )
                 }
               >
-                <option value="UPDATE">Redact (SQL REPLACE)</option>
-
-                <option value="DELETE">Delete Row</option>
+                <option value="UPDATE">Update (custom replacement)</option>
+                <option value="REDACT">Redact (auto‑replace with [REDACTED])</option>
+                <option value="MASK">Mask (auto‑replace with [MASKED])</option>
               </select>
             </div>
 

@@ -146,12 +146,22 @@ def _manage_postgres(connection: Any, identifier: str, action: str, new_value: s
 def manage_database_data(config: Mapping[str, Any], identifier: str, action: str, new_value: str | None = None) -> dict[str, Any]:
     """
     Search and replace/delete records containing `identifier` in the configured database.
-    action can be "UPDATE" (mask/redact) or "DELETE" (delete entire row).
+    Supported actions:
+      * "UPDATE" – replace with a custom `new_value`.
+      * "REDACT" – replace with the sentinel "[REDACTED]".
+      * "MASK" – replace with the sentinel "[MASKED]".
+      * "DELETE" – delete the whole row.
     """
     max_tables = _environment_int("DB_SCAN_MAX_TABLES", 100, 1, 500)
     connection = open_write_connection(config)
+    original_action = action
 
     try:
+        # Map REDACT and MASK to UPDATE with appropriate sentinel values
+        if action in ("REDACT", "MASK"):
+            # Use the appropriate sentinel replacement and force UPDATE semantics
+            new_value = "[REDACTED]" if action == "REDACT" else "[MASKED]"
+            action = "UPDATE"
         if config.get("engine") == "sqlite":
             result = _manage_sqlite(connection, identifier, action, new_value, max_tables)
         elif config.get("engine") == "postgres":
@@ -169,7 +179,7 @@ def manage_database_data(config: Mapping[str, Any], identifier: str, action: str
         "actor_id": "db-action-engine",
         "entity_type": "data_subject_request",
         "org_id": org_id,
-        "action": action,
+        "action": action,  # Action now reflects REDACT, MASK, UPDATE or DELETE
         "identifier": identifier,
         "tables_affected": result["impacted_locations"],
         "rows_affected": result["impacted_rows"],
@@ -184,7 +194,7 @@ def manage_database_data(config: Mapping[str, Any], identifier: str, action: str
         "identifier": identifier,
         "status": "SUCCESS",
         "message": f"Database {action.title()} processed for {identifier}.",
-        "impacted_locations": result["impacted_locations"], # Number of tables
+        "impacted_locations": result["impacted_locations"],  # Number of tables
         "impacted_rows": result["impacted_rows"],
         "new_value": new_value if action == "UPDATE" else None,
     }
