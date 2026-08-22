@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChevronDown,
   RefreshCw,
@@ -545,7 +545,7 @@ export default function RequestsPage() {
     return getAuthHeaders(authToken, currentOrgId);
   }, [authToken, currentOrgId]);
 
-  const loadData = async (showLoading = false) => {
+  const loadData = useCallback(async (showLoading = false) => {
     if (showLoading) setIsRefreshing(true);
     if (!authToken || authToken.startsWith("guest_") || !currentOrgId) {
       setRequests([]);
@@ -562,13 +562,13 @@ export default function RequestsPage() {
       if (showLoading) setIsRefreshing(false);
       setInitialLoading(false);
     }
-  };
+  }, [authToken, currentOrgId]);
 
   useEffect(() => {
     void loadData(true);
     const interval = window.setInterval(() => void loadData(false), 5000);
     return () => window.clearInterval(interval);
-  }, [authToken, currentOrgId]);
+  }, [loadData]);
 
   const handleCancel = async (id: string) => {
     setCancellingId(id);
@@ -816,7 +816,7 @@ export default function RequestsPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={isRefreshing}
+            disabled={isRefreshing || !!approvingId || !!cancellingId}
             onClick={() => void loadData(true)}
           >
             <RefreshCw className={`h-3.5 w-3.5 mr-1 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh

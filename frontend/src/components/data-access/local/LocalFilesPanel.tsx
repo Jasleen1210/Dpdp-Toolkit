@@ -117,6 +117,7 @@ export default function LocalFilesPanel() {
   const [statusText, setStatusText] = useState("");
   const [errorText, setErrorText] = useState("");
   const [loading, setLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isListingDevices, setIsListingDevices] = useState(false);
   const [isListingCronRuns, setIsListingCronRuns] = useState(false);
 
@@ -400,7 +401,7 @@ export default function LocalFilesPanel() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={loading}
+                  disabled={loading || isRefreshing}
                   onClick={() => void handleApproveDevice(request.device_id)}
                 >
                   Approve Device
@@ -417,14 +418,16 @@ export default function LocalFilesPanel() {
           <Button
             variant="outline"
             size="sm"
-            disabled={loading}
+            disabled={loading || isRefreshing}
             onClick={async () => {
               clearMessages();
+              setIsRefreshing(true);
               await refreshAllData();
+              setIsRefreshing(false);
               setStatusText("Refreshed local agent data.");
             }}
           >
-            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh
           </Button>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-[12px]">
@@ -449,14 +452,16 @@ export default function LocalFilesPanel() {
             <Button
               variant="outline"
               size="sm"
-              disabled={loading}
+              disabled={loading || isRefreshing}
               onClick={async () => {
                 clearMessages();
+                setIsRefreshing(true);
                 await refreshAllData();
+                setIsRefreshing(false);
                 setStatusText("Refreshed local agent data.");
               }}
             >
-              <RefreshCw className="h-3.5 w-3.5" /> Refresh
+              <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? "animate-spin" : ""}`} /> Refresh
             </Button>
           </div>
           {isListingDevices ? (
@@ -476,7 +481,7 @@ export default function LocalFilesPanel() {
                   report={dailyReportByDevice[device.device_id]}
                   dailyReportDate={dailyReportDate}
                   orgId={orgId}
-                  loading={loading}
+                  loading={loading || isRefreshing}
                   apiConfig={apiConfig}
                   onApprove={handleApproveDevice}
                 />
@@ -505,14 +510,16 @@ export default function LocalFilesPanel() {
               <Button
                 variant="outline"
                 size="sm"
-                disabled={loading || isListingCronRuns}
+                disabled={loading || isRefreshing || isListingCronRuns}
                 onClick={async () => {
                   clearMessages();
+                  setIsRefreshing(true);
                   await refreshCronRuns();
+                  setIsRefreshing(false);
                   setStatusText("Fetched cron job results.");
                 }}
               >
-                <RefreshCw className="h-3.5 w-3.5" /> Refresh
+                <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing || isListingCronRuns ? "animate-spin" : ""}`} /> Refresh
               </Button>
             </div>
           </div>
